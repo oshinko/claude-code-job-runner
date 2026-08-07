@@ -1,11 +1,11 @@
 # Claude Code Docker Runner
 
-GitHubリポジトリをコンテナ内へcloneし、リポジトリルートの `AGENTS.md` を起点にClaude Codeを非対話実行するrunnerです。Claude Codeが正常終了して変更が残った場合、runnerが1つのcommitを作成し、指定されたブランチへ直接pushします。
+GitHubリポジトリをコンテナ内へcloneし、リポジトリルートの `AGENTS.md` を起点にClaude Codeを非対話実行するrunnerです。commit、push、Git identityなどのGitワークフローはrunnerでは判断せず、Claude Codeが `AGENTS.md` に従って実行します。
 
 ## 動作の流れ
 
 1. 必須設定と認証情報を検証します。
-2. `GITHUB_TOKEN` を使って指定ブランチを一時ディレクトリへcloneします。
+2. `GITHUB_TOKEN` を使って指定ブランチを一時ディレクトリへcloneし、同じ認証をClaude Codeから利用できるようにします。
 3. `{repo_root}/AGENTS.md` の存在、非空、UTF-8を確認します。
 4. repoルートで次の要領によりClaude Codeを起動します。
 
@@ -13,13 +13,12 @@ GitHubリポジトリをコンテナ内へcloneし、リポジトリルートの
    claude -p \
      --append-system-prompt-file ./AGENTS.md \
      --permission-mode bypassPermissions \
-     --output-format json \
-     --json-schema '{"type":"object","properties":{"commit_message":{"type":"string"}},"required":["commit_message"]}' \
+     --output-format stream-json \
+     --verbose \
      "AGENTS.mdに記載された指示に従い、必要な関連文書を参照して作業を完了してください。"
    ```
 
-5. Claude Codeが成功し、Gitメタデータが変更されていない場合だけ、全差分をClaudeが生成したメッセージによる1コミットにします。
-6. 指定ブランチへ通常のfast-forward pushを行います。force pushや自動rebaseはしません。
+5. Claude Codeの終了コードをrunnerの終了コードとして返します。runnerによるcommit、push、差分保存は行いません。
 
 通常モードで起動するため、リポジトリに `CLAUDE.md`、Claude Code skills、hooks、plugins、MCP設定がある場合は、それらもClaude Codeの標準仕様に従って読み込まれます。`AGENTS.md` 自体はClaude Codeの自動検出対象ではないため、`--append-system-prompt-file` で明示的に追加しています。
 
@@ -89,10 +88,7 @@ docker build \
 | 変数 | 内容 |
 | --- | --- |
 | `REPOSITORY_URL` | `https://github.com/<owner>/<repo>.git` 形式のURL |
-| `GIT_BRANCH` | cloneおよび直接pushするブランチ |
-| `GITHUB_TOKEN` | 対象repoのContents read/writeを持つtoken |
-| `GIT_AUTHOR_NAME` | commit author名 |
-| `GIT_AUTHOR_EMAIL` | commit authorメールアドレス |
+| `GITHUB_TOKEN` | 対象repoとタスクに必要な最小権限を持つtoken |
 | `MAX_TURNS` | Claude Codeの最大agentic turn数。1以上の整数 |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth認証。API keyとは排他的 |
 | `ANTHROPIC_API_KEY` | Anthropic API認証。OAuth tokenとは排他的 |
@@ -103,6 +99,7 @@ Claude認証は `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のど�
 
 | 変数 | 内容 |
 | --- | --- |
+| `GIT_BRANCH` | checkoutする既存ブランチ。未指定または空の場合は `main` |
 | `MAX_BUDGET_USD` | 指定時に `--max-budget-usd` として渡す正数 |
 | `CLAUDE_MODEL` | 指定時に `--model` として渡すmodel名またはalias |
 
@@ -116,8 +113,6 @@ docker run --rm \
   -e GIT_BRANCH=main \
   -e GITHUB_TOKEN \
   -e CLAUDE_CODE_OAUTH_TOKEN \
-  -e GIT_AUTHOR_NAME=claude-code-runner \
-  -e GIT_AUTHOR_EMAIL=claude-code-runner@example.invalid \
   -e MAX_TURNS=30 \
   claude-code-runner:2.1.220
 ```
@@ -140,25 +135,30 @@ USER runner
 
 元イメージのentrypointはそのまま継承されます。
 
-## 終了条件
+## Gitワークフロー
 
-- Claude Codeが失敗した場合: 非ゼロ終了し、commit/pushしません。
-- Claude Codeが変更を作らなかった場合: ゼロ終了し、commit/pushしません。
-- Claude Codeが有効な一行のコミットメッセージを返さなかった場合: 非ゼロ終了し、commit/pushしません。
-- Claude Codeがcommit、ref、Git設定、Git hookを変更した場合: 非ゼロ終了し、pushしません。
-- remote branchが実行中に先行した場合: pushが失敗します。force pushや自動rebaseは行いません。
-- branch protectionが直接pushを拒否した場合: 非ゼロ終了します。
+commitやpushが必要なrepoでは、その実施条件、Git identity、コミット方針を `AGENTS.md` に記載してください。例えば次のように指示できます。
+
+```markdown
+- 実装と検証が成功した場合は、変更内容に適したメッセージでcommitし、現在のブランチへpushする
+- commit前に次のrepoローカル設定を行う
+  - `git config user.name "Example Bot"`
+  - `git config user.email "example-bot@example.com"`
+- 調査、レビュー、計画だけのタスクではcommitおよびpushを行わない
+```
+
+runnerはClaude Code終了後にGit操作を補完・検査しません。commitしない実行で一時作業ツリーに残った差分は、コンテナ終了時に破棄されます。
 
 ## セキュリティ上の前提
 
 このrunnerは `bypassPermissions` でClaude Codeを起動します。対象は自身で管理する信頼済みリポジトリに限定してください。
 
-`GITHUB_TOKEN` はClaude Code子プロセスの環境から除外し、Gitのcredential URLにも保存しません。ただし、clone、Claude実行、pushを同じコンテナ・同じUnixユーザーで行う構成であるため、OSレベルの完全な秘密分離ではありません。次の条件を守ってください。
+`GITHUB_TOKEN` はcredential URLへ保存しませんが、Claude Code自身がGit操作を行えるように、そのプロセスから利用可能です。次の条件を守ってください。
 
 - GitHub fine-grained tokenまたはGitHub Appの短寿命tokenを使う。
 - tokenの対象を実行対象repoだけに限定する。
-- Contents read/write以外の不要な権限を付与しない。
+- cloneだけならContents read、pushさせる場合はContents writeとし、タスクに不要な権限を付与しない。
 - 第三者の未検証repoや未信頼のpull requestを実行しない。
 - runnerコンテナへSSH鍵、クラウド資格情報、ホストのDocker socketをmountしない。
 
-より強い秘密分離が必要な場合は、checkout、Claude Code、pushを別コンテナまたはCI jobへ分離してください。
+tokenをClaude Codeから分離する必要がある場合は、このrunnerではなくcheckout、Claude Code、pushを別コンテナまたはCI jobへ分離してください。

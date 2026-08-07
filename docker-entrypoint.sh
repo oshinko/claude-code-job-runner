@@ -2,8 +2,6 @@
 set -Eeuo pipefail
 
 readonly DEFAULT_PROMPT='AGENTS.mdに記載された指示に従い、必要な関連文書を参照して作業を完了してください。'
-readonly RUNNER_POLICY='Gitのcommitおよびpushは行わず、実装と検証までを完了してください。最後に、実際の変更内容に適した一行のコミットメッセージを返してください。'
-readonly COMMIT_MESSAGE_SCHEMA='{"type":"object","properties":{"commit_message":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"}},"required":["commit_message"],"additionalProperties":false}'
 
 work_dir=''
 askpass_dir=''
@@ -45,10 +43,7 @@ require_env() {
 
 for required_name in \
   REPOSITORY_URL \
-  GIT_BRANCH \
   GITHUB_TOKEN \
-  GIT_AUTHOR_NAME \
-  GIT_AUTHOR_EMAIL \
   MAX_TURNS; do
   require_env "${required_name}"
 done
@@ -63,8 +58,10 @@ fi
 [[ "${REPOSITORY_URL}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]] \
   || fail 'REPOSITORY_URL must be an https://github.com/<owner>/<repo>[.git] URL without embedded credentials'
 
-git check-ref-format --branch "${GIT_BRANCH}" >/dev/null 2>&1 \
+readonly git_branch="${GIT_BRANCH:-main}"
+git check-ref-format --branch "${git_branch}" >/dev/null 2>&1 \
   || fail 'GIT_BRANCH is not a valid branch name'
+export GIT_BRANCH="${git_branch}"
 
 [[ "${MAX_TURNS}" =~ ^[1-9][0-9]*$ ]] \
   || fail 'MAX_TURNS must be a positive integer'
@@ -75,14 +72,6 @@ if [[ -n "${MAX_BUDGET_USD:-}" ]]; then
   awk -v value="${MAX_BUDGET_USD}" 'BEGIN { exit !(value > 0) }' \
     || fail 'MAX_BUDGET_USD must be greater than zero'
 fi
-
-[[ "${GIT_AUTHOR_NAME}" != *$'\n'* && "${GIT_AUTHOR_NAME}" != *$'\r'* ]] \
-  || fail 'GIT_AUTHOR_NAME must be a single line'
-[[ "${GIT_AUTHOR_EMAIL}" != *$'\n'* && "${GIT_AUTHOR_EMAIL}" != *$'\r'* ]] \
-  || fail 'GIT_AUTHOR_EMAIL must be a single line'
-
-readonly github_token="${GITHUB_TOKEN}"
-unset GITHUB_TOKEN
 
 create_askpass() {
   askpass_dir="$(mktemp -d /tmp/claude-git-askpass.XXXXXX)"
@@ -96,44 +85,18 @@ EOF
   chmod 0700 "${askpass_dir}/askpass.sh"
 }
 
-remove_askpass() {
-  if [[ -n "${askpass_dir}" && -d "${askpass_dir}" ]]; then
-    rm -rf -- "${askpass_dir}"
-  fi
-  askpass_dir=''
-}
-
-git_with_token() {
-  create_askpass
-  RUNNER_GITHUB_TOKEN="${github_token}" \
-    GIT_ASKPASS="${askpass_dir}/askpass.sh" \
-    GIT_TERMINAL_PROMPT=0 \
-    "$@"
-  local status=$?
-  remove_askpass
-  return "${status}"
-}
-
-metadata_manifest() {
-  {
-    find .git -mindepth 1 \
-      ! -path .git/index \
-      ! -path .git/index.lock \
-      -printf '%y  %p  %l\n' | sort
-    find .git -type f \
-      ! -path .git/index \
-      ! -path .git/index.lock \
-      -print0 | sort -z | xargs -0 -r sha256sum
-  } | sha256sum | awk '{ print $1 }'
-}
-
 work_dir="$(mktemp -d /workspace/claude-run.XXXXXX)"
 repo_dir="${work_dir}/repo"
 
-log "Cloning ${REPOSITORY_URL} branch ${GIT_BRANCH}"
-git_with_token git clone \
+create_askpass
+export RUNNER_GITHUB_TOKEN="${GITHUB_TOKEN}"
+export GIT_ASKPASS="${askpass_dir}/askpass.sh"
+export GIT_TERMINAL_PROMPT=0
+
+log "Cloning ${REPOSITORY_URL} branch ${git_branch}"
+git clone \
   --single-branch \
-  --branch "${GIT_BRANCH}" \
+  --branch "${git_branch}" \
   -- \
   "${REPOSITORY_URL}" \
   "${repo_dir}"
@@ -146,17 +109,13 @@ cd "${repo_dir}"
 iconv -f UTF-8 -t UTF-8 ./AGENTS.md >/dev/null 2>&1 \
   || fail 'AGENTS.md must be valid UTF-8'
 
-readonly baseline_head="$(git rev-parse --verify HEAD)"
-readonly baseline_metadata="$(metadata_manifest)"
-
 claude_args=(
   -p
   --append-system-prompt-file ./AGENTS.md
-  --append-system-prompt "${RUNNER_POLICY}"
   --permission-mode bypassPermissions
   --max-turns "${MAX_TURNS}"
-  --output-format json
-  --json-schema "${COMMIT_MESSAGE_SCHEMA}"
+  --output-format stream-json
+  --verbose
   --no-session-persistence
 )
 
@@ -168,63 +127,17 @@ if [[ -n "${CLAUDE_MODEL:-}" ]]; then
 fi
 
 log 'Starting Claude Code'
-claude_result_file="${work_dir}/claude-result.json"
 set +e
-env -u GITHUB_TOKEN -u RUNNER_GITHUB_TOKEN \
-  claude "${claude_args[@]}" "${DEFAULT_PROMPT}" >"${claude_result_file}" &
+claude "${claude_args[@]}" "${DEFAULT_PROMPT}" &
 claude_pid=$!
 wait "${claude_pid}"
 claude_status=$?
 claude_pid=''
 set -e
 
-if [[ -s "${claude_result_file}" ]]; then
-  cat "${claude_result_file}"
-fi
-
 if (( claude_status != 0 )); then
-  fail "Claude Code exited with status ${claude_status}; changes will not be committed"
+  log "Claude Code exited with status ${claude_status}"
+  exit "${claude_status}"
 fi
 
-[[ "$(git rev-parse --verify HEAD)" == "${baseline_head}" ]] \
-  || fail 'Claude Code changed HEAD or created a commit; refusing to push'
-[[ "$(metadata_manifest)" == "${baseline_metadata}" ]] \
-  || fail 'Claude Code changed protected Git metadata; refusing to commit or push'
-
-commit_message="$(node -e '
-  const fs = require("node:fs");
-  const result = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  const message = result?.structured_output?.commit_message;
-  if (typeof message !== "string") process.exit(1);
-  const trimmed = message.trim();
-  if (!trimmed || trimmed.length > 200 || /[\r\n]/.test(trimmed)) process.exit(1);
-  process.stdout.write(trimmed);
-' "${claude_result_file}")" \
-  || fail 'Claude Code did not return a valid commit message'
-
-unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
-
-if [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
-  log 'Claude Code completed successfully and produced no changes'
-  exit 0
-fi
-
-log 'Creating runner-managed commit'
-git add -A
-if git diff --cached --quiet; then
-  log 'No committable changes remain after staging'
-  exit 0
-fi
-
-git \
-  -c core.hooksPath=/dev/null \
-  -c user.name="${GIT_AUTHOR_NAME}" \
-  -c user.email="${GIT_AUTHOR_EMAIL}" \
-  commit --no-gpg-sign -m "${commit_message}"
-
-log "Pushing commit to ${GIT_BRANCH}"
-git_with_token git \
-  -c core.hooksPath=/dev/null \
-  push origin "HEAD:refs/heads/${GIT_BRANCH}"
-
-log "Completed successfully at commit $(git rev-parse HEAD)"
+log 'Claude Code completed successfully'
