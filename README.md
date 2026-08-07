@@ -23,7 +23,52 @@ GitHubリポジトリをコンテナ内へcloneし、リポジトリルートの
 
 通常モードで起動するため、リポジトリに `CLAUDE.md`、Claude Code skills、hooks、plugins、MCP設定がある場合は、それらもClaude Codeの標準仕様に従って読み込まれます。`AGENTS.md` 自体はClaude Codeの自動検出対象ではないため、`--append-system-prompt-file` で明示的に追加しています。
 
-## イメージのbuild
+## Docker Composeで実行する
+
+Docker Compose 2.24.0以降を使用します。設定例をコピーし、対象repo、Git、Claude Codeの認証情報を入力してください。
+
+PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Bash:
+
+```console
+cp .env.example .env
+```
+
+`.env` では `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のどちらか一方だけに値を設定します。その後、次のコマンドでイメージのbuildと1回限りのrunner実行を行えます。
+
+```console
+docker compose run --rm --build runner
+```
+
+2回目以降、Dockerfileやrunnerを変更していなければ `--build` を省略できます。
+
+```console
+docker compose run --rm runner
+```
+
+別名の環境ファイルを使う場合は、`RUNNER_ENV_FILE` で指定します。
+
+PowerShell:
+
+```powershell
+$env:RUNNER_ENV_FILE = '.env.production'
+docker compose run --rm runner
+```
+
+Bash:
+
+```console
+RUNNER_ENV_FILE=.env.production docker compose run --rm runner
+```
+
+`.env` と `*.env` はGitの追跡対象から除外されています。秘密値を含むため共有、commit、ログへの貼り付けを行わず、Linuxではファイル権限も実行ユーザーだけが読めるようにしてください。
+
+## イメージを直接buildする
 
 ```console
 docker build -t claude-code-runner:2.1.220 .
@@ -62,7 +107,7 @@ Claude認証は `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のど�
 | `MAX_BUDGET_USD` | 指定時に `--max-budget-usd` として渡す正数 |
 | `CLAUDE_MODEL` | 指定時に `--model` として渡すmodel名またはalias |
 
-## 実行例
+## docker runによる実行例
 
 OAuth tokenを使う例です。
 

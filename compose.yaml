@@ -1,0 +1,15 @@
+name: claude-code-runner
+
+services:
+  runner:
+    build:
+      context: .
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.220}
+        RUNNER_UID: ${RUNNER_UID:-10001}
+        RUNNER_GID: ${RUNNER_GID:-10001}
+    image: claude-code-runner:${CLAUDE_CODE_VERSION:-2.1.220}
+    env_file:
+      - path: ${RUNNER_ENV_FILE:-.env}
+        required: true
+    restart: "no"
