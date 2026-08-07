@@ -13,12 +13,12 @@ GitHubリポジトリをコンテナ内へcloneし、リポジトリルートの
    claude -p \
      --append-system-prompt-file ./AGENTS.md \
      --permission-mode bypassPermissions \
-     --output-format stream-json \
-     --verbose \
+     --output-format json \
+     --json-schema '{"type":"object","properties":{"commit_message":{"type":"string"}},"required":["commit_message"]}' \
      "AGENTS.mdに記載された指示に従い、必要な関連文書を参照して作業を完了してください。"
    ```
 
-5. Claude Codeが成功し、Gitメタデータが変更されていない場合だけ、全差分をrunner管理の1コミットにします。
+5. Claude Codeが成功し、Gitメタデータが変更されていない場合だけ、全差分をClaudeが生成したメッセージによる1コミットにします。
 6. 指定ブランチへ通常のfast-forward pushを行います。force pushや自動rebaseはしません。
 
 通常モードで起動するため、リポジトリに `CLAUDE.md`、Claude Code skills、hooks、plugins、MCP設定がある場合は、それらもClaude Codeの標準仕様に従って読み込まれます。`AGENTS.md` 自体はClaude Codeの自動検出対象ではないため、`--append-system-prompt-file` で明示的に追加しています。
@@ -93,7 +93,6 @@ docker build \
 | `GITHUB_TOKEN` | 対象repoのContents read/writeを持つtoken |
 | `GIT_AUTHOR_NAME` | commit author名 |
 | `GIT_AUTHOR_EMAIL` | commit authorメールアドレス |
-| `GIT_COMMIT_MESSAGE` | runnerが作るcommitのメッセージ |
 | `MAX_TURNS` | Claude Codeの最大agentic turn数。1以上の整数 |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth認証。API keyとは排他的 |
 | `ANTHROPIC_API_KEY` | Anthropic API認証。OAuth tokenとは排他的 |
@@ -119,7 +118,6 @@ docker run --rm \
   -e CLAUDE_CODE_OAUTH_TOKEN \
   -e GIT_AUTHOR_NAME=claude-code-runner \
   -e GIT_AUTHOR_EMAIL=claude-code-runner@example.invalid \
-  -e 'GIT_COMMIT_MESSAGE=chore: apply automated changes' \
   -e MAX_TURNS=30 \
   claude-code-runner:2.1.220
 ```
@@ -146,6 +144,7 @@ USER runner
 
 - Claude Codeが失敗した場合: 非ゼロ終了し、commit/pushしません。
 - Claude Codeが変更を作らなかった場合: ゼロ終了し、commit/pushしません。
+- Claude Codeが有効な一行のコミットメッセージを返さなかった場合: 非ゼロ終了し、commit/pushしません。
 - Claude Codeがcommit、ref、Git設定、Git hookを変更した場合: 非ゼロ終了し、pushしません。
 - remote branchが実行中に先行した場合: pushが失敗します。force pushや自動rebaseは行いません。
 - branch protectionが直接pushを拒否した場合: 非ゼロ終了します。

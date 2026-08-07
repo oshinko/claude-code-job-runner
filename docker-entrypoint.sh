@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 readonly DEFAULT_PROMPT='AGENTS.mdに記載された指示に従い、必要な関連文書を参照して作業を完了してください。'
-readonly RUNNER_POLICY='Gitのcommitおよびpushは行わず、実装と検証までを完了してください。'
+readonly RUNNER_POLICY='Gitのcommitおよびpushは行わず、実装と検証までを完了してください。最後に、実際の変更内容に適した一行のコミットメッセージを返してください。'
+readonly COMMIT_MESSAGE_SCHEMA='{"type":"object","properties":{"commit_message":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"}},"required":["commit_message"],"additionalProperties":false}'
 
 work_dir=''
 askpass_dir=''
@@ -48,7 +49,6 @@ for required_name in \
   GITHUB_TOKEN \
   GIT_AUTHOR_NAME \
   GIT_AUTHOR_EMAIL \
-  GIT_COMMIT_MESSAGE \
   MAX_TURNS; do
   require_env "${required_name}"
 done
@@ -155,8 +155,8 @@ claude_args=(
   --append-system-prompt "${RUNNER_POLICY}"
   --permission-mode bypassPermissions
   --max-turns "${MAX_TURNS}"
-  --output-format stream-json
-  --verbose
+  --output-format json
+  --json-schema "${COMMIT_MESSAGE_SCHEMA}"
   --no-session-persistence
 )
 
@@ -168,14 +168,19 @@ if [[ -n "${CLAUDE_MODEL:-}" ]]; then
 fi
 
 log 'Starting Claude Code'
+claude_result_file="${work_dir}/claude-result.json"
 set +e
 env -u GITHUB_TOKEN -u RUNNER_GITHUB_TOKEN \
-  claude "${claude_args[@]}" "${DEFAULT_PROMPT}" &
+  claude "${claude_args[@]}" "${DEFAULT_PROMPT}" >"${claude_result_file}" &
 claude_pid=$!
 wait "${claude_pid}"
 claude_status=$?
 claude_pid=''
 set -e
+
+if [[ -s "${claude_result_file}" ]]; then
+  cat "${claude_result_file}"
+fi
 
 if (( claude_status != 0 )); then
   fail "Claude Code exited with status ${claude_status}; changes will not be committed"
@@ -185,6 +190,17 @@ fi
   || fail 'Claude Code changed HEAD or created a commit; refusing to push'
 [[ "$(metadata_manifest)" == "${baseline_metadata}" ]] \
   || fail 'Claude Code changed protected Git metadata; refusing to commit or push'
+
+commit_message="$(node -e '
+  const fs = require("node:fs");
+  const result = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const message = result?.structured_output?.commit_message;
+  if (typeof message !== "string") process.exit(1);
+  const trimmed = message.trim();
+  if (!trimmed || trimmed.length > 200 || /[\r\n]/.test(trimmed)) process.exit(1);
+  process.stdout.write(trimmed);
+' "${claude_result_file}")" \
+  || fail 'Claude Code did not return a valid commit message'
 
 unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
 
@@ -204,7 +220,7 @@ git \
   -c core.hooksPath=/dev/null \
   -c user.name="${GIT_AUTHOR_NAME}" \
   -c user.email="${GIT_AUTHOR_EMAIL}" \
-  commit --no-gpg-sign -m "${GIT_COMMIT_MESSAGE}"
+  commit --no-gpg-sign -m "${commit_message}"
 
 log "Pushing commit to ${GIT_BRANCH}"
 git_with_token git \
