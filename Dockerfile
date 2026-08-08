@@ -1,8 +1,8 @@
 FROM node:22-bookworm-slim
 
 ARG CLAUDE_CODE_VERSION=2.1.220
-ARG RUNNER_UID=10001
-ARG RUNNER_GID=10001
+ARG CONTAINER_UID=10001
+ARG CONTAINER_GID=10001
 
 ENV DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 \
@@ -16,15 +16,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force \
-    && groupadd --gid "${RUNNER_GID}" runner \
-    && useradd --uid "${RUNNER_UID}" --gid "${RUNNER_GID}" --create-home --shell /bin/bash runner \
+    && groupadd --gid "${CONTAINER_GID}" runner \
+    && useradd --uid "${CONTAINER_UID}" --gid "${CONTAINER_GID}" --create-home --shell /bin/bash runner \
     && mkdir -p /workspace /tmp/claude-code-config \
     && chown -R runner:runner /workspace /tmp/claude-code-config
 
-COPY --chown=root:root docker-entrypoint.sh /usr/local/bin/claude-code-runner
-RUN chmod 0755 /usr/local/bin/claude-code-runner
+COPY --chown=root:root docker-entrypoint.sh /usr/local/bin/claude-code-job-runner
+RUN chmod 0755 /usr/local/bin/claude-code-job-runner
 
 USER runner
 WORKDIR /workspace
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/claude-code-runner"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/claude-code-job-runner"]

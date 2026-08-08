@@ -1,6 +1,8 @@
-# Claude Code Docker Runner
+# Claude Code Job Runner
 
 GitHubリポジトリをコンテナ内へcloneし、リポジトリルートの `AGENTS.md` を起点にClaude Codeを非対話実行するrunnerです。commit、push、Git identityなどのGitワークフローはrunnerでは判断せず、Claude Codeが `AGENTS.md` に従って実行します。
+
+> このプロジェクトはAnthropicによる公式プロジェクトではありません。
 
 ## 動作の流れ
 
@@ -50,19 +52,19 @@ docker compose run --rm --build runner
 docker compose run --rm runner
 ```
 
-別名の環境ファイルを使う場合は、`RUNNER_ENV_FILE` で指定します。
+別名の環境ファイルを使う場合は、`ENV_FILE` で指定します。
 
 PowerShell:
 
 ```powershell
-$env:RUNNER_ENV_FILE = '.env.production'
+$env:ENV_FILE = '.env.production'
 docker compose run --rm runner
 ```
 
 Bash:
 
 ```console
-RUNNER_ENV_FILE=.env.production docker compose run --rm runner
+ENV_FILE=.env.production docker compose run --rm runner
 ```
 
 `.env` と `*.env` はGitの追跡対象から除外されています。秘密値を含むため共有、commit、ログへの貼り付けを行わず、Linuxではファイル権限も実行ユーザーだけが読めるようにしてください。
@@ -70,7 +72,7 @@ RUNNER_ENV_FILE=.env.production docker compose run --rm runner
 ## イメージを直接buildする
 
 ```console
-docker build -t claude-code-runner:2.1.220 .
+docker build -t claude-code-job-runner:2.1.220 .
 ```
 
 Claude Codeのバージョンはbuild argumentで変更できます。
@@ -78,10 +80,14 @@ Claude Codeのバージョンはbuild argumentで変更できます。
 ```console
 docker build \
   --build-arg CLAUDE_CODE_VERSION=2.1.220 \
-  -t claude-code-runner:custom .
+  --build-arg CONTAINER_UID=10001 \
+  --build-arg CONTAINER_GID=10001 \
+  -t claude-code-job-runner:custom .
 ```
 
 自動更新は無効です。バージョンを更新するときはbuild argumentを変更してイメージを再buildしてください。
+
+`CONTAINER_UID` と `CONTAINER_GID` はコンテナ内の非root `runner` ユーザーへ割り当てる値で、既定値はどちらも `10001` です。通常は変更する必要はありません。
 
 ## 必須設定
 
@@ -114,7 +120,7 @@ docker run --rm \
   -e GITHUB_TOKEN \
   -e CLAUDE_CODE_OAUTH_TOKEN \
   -e MAX_TURNS=30 \
-  claude-code-runner:2.1.220
+  claude-code-job-runner:2.1.220
 ```
 
 API keyを使う場合は `CLAUDE_CODE_OAUTH_TOKEN` の代わりに `ANTHROPIC_API_KEY` を渡します。秘密値をコマンドラインへ直接書かず、呼び出し元のsecret管理機能から環境変数として注入してください。
@@ -124,7 +130,7 @@ API keyを使う場合は `CLAUDE_CODE_OAUTH_TOKEN` の代わりに `ANTHROPIC_A
 runner本体は特定言語のビルド環境を同梱しません。対象プロジェクトに必要なSDKやパッケージを派生イメージへ追加します。
 
 ```dockerfile
-FROM claude-code-runner:2.1.220
+FROM claude-code-job-runner:2.1.220
 
 USER root
 RUN apt-get update \

@@ -1,4 +1,4 @@
-name: claude-code-runner
+name: claude-code-job-runner
 
 services:
   runner:
@@ -6,10 +6,10 @@ services:
       context: .
       args:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.220}
-        RUNNER_UID: ${RUNNER_UID:-10001}
-        RUNNER_GID: ${RUNNER_GID:-10001}
-    image: claude-code-runner:${CLAUDE_CODE_VERSION:-2.1.220}
+        CONTAINER_UID: ${CONTAINER_UID:-10001}
+        CONTAINER_GID: ${CONTAINER_GID:-10001}
+    image: claude-code-job-runner:${CLAUDE_CODE_VERSION:-2.1.220}
     env_file:
-      - path: ${RUNNER_ENV_FILE:-.env}
+      - path: ${ENV_FILE:-.env}
         required: true
     restart: "no"

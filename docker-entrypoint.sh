@@ -8,7 +8,7 @@ askpass_dir=''
 claude_pid=''
 
 log() {
-  printf '[claude-code-runner] %s\n' "$*" >&2
+  printf '[claude-code-job-runner] %s\n' "$*" >&2
 }
 
 fail() {
@@ -79,17 +79,16 @@ create_askpass() {
 #!/usr/bin/env sh
 case "$1" in
   *Username*) printf '%s\n' 'x-access-token' ;;
-  *) printf '%s\n' "${RUNNER_GITHUB_TOKEN}" ;;
+  *) printf '%s\n' "${GITHUB_TOKEN}" ;;
 esac
 EOF
   chmod 0700 "${askpass_dir}/askpass.sh"
 }
 
-work_dir="$(mktemp -d /workspace/claude-run.XXXXXX)"
+work_dir="$(mktemp -d /workspace/claude-job.XXXXXX)"
 repo_dir="${work_dir}/repo"
 
 create_askpass
-export RUNNER_GITHUB_TOKEN="${GITHUB_TOKEN}"
 export GIT_ASKPASS="${askpass_dir}/askpass.sh"
 export GIT_TERMINAL_PROMPT=0
 
