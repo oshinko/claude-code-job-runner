@@ -118,6 +118,9 @@ Claude認証は `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のど�
 | `GIT_BRANCH` | checkoutする既存ブランチ。未指定または空の場合は `main` |
 | `MAX_BUDGET_USD` | 指定時に `--max-budget-usd` として渡す正数 |
 | `CLAUDE_MODEL` | 指定時に `--model` として渡すmodel名またはalias |
+| `PROMPT` | Claude Codeへ渡すタスク。未指定または空の場合はrunnerの既定文 |
+
+`PROMPT`には実行ごとの短い指示を指定できます。詳細な要件はリポジトリ内の文書に置き、例えば `docs/tasks/example.mdを参照して実装してください。` のように指定します。複数行の長い指示は `.env` ではなく、リポジトリ内の文書で管理してください。
 
 ## docker runによる実行例
 

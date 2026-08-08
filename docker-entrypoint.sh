@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 readonly DEFAULT_PROMPT='AGENTS.mdに記載された指示に従い、必要な関連文書を参照して作業を完了してください。'
+readonly prompt="${PROMPT:-${DEFAULT_PROMPT}}"
 
 work_dir=''
 askpass_dir=''
@@ -127,7 +128,7 @@ fi
 
 log 'Starting Claude Code'
 set +e
-claude "${claude_args[@]}" "${DEFAULT_PROMPT}" &
+claude "${claude_args[@]}" "${prompt}" &
 claude_pid=$!
 wait "${claude_pid}"
 claude_status=$?
