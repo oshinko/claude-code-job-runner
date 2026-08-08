@@ -52,6 +52,16 @@ docker compose run --rm --build runner
 docker compose run --rm runner
 ```
 
+Composeではpip、npm、uvなどのパッケージ取得キャッシュを名前付きボリュームへ保存します。コンテナを削除してもキャッシュは残り、次回以降の依存関係セットアップで再利用されます。cloneしたリポジトリ、`.venv`、`node_modules` はジョブごとに作り直します。
+
+キャッシュを削除する場合は、runnerが動作していないことを確認して次を実行します。
+
+```console
+docker compose down --volumes
+```
+
+キャッシュは同じComposeプロジェクトの実行間で共有されます。書き換え可能な共有状態になるため、信頼境界が異なるリポジトリには同じキャッシュボリュームを使用しないでください。
+
 別名の環境ファイルを使う場合は、`ENV_FILE` で指定します。
 
 PowerShell:
@@ -125,16 +135,27 @@ docker run --rm \
 
 API keyを使う場合は `CLAUDE_CODE_OAUTH_TOKEN` の代わりに `ANTHROPIC_API_KEY` を渡します。秘密値をコマンドラインへ直接書かず、呼び出し元のsecret管理機能から環境変数として注入してください。
 
-## プロジェクト固有のツールを追加する
+## 利用可能な開発環境
 
-runner本体は特定言語のビルド環境を同梱しません。対象プロジェクトに必要なSDKやパッケージを派生イメージへ追加します。
+runnerにはNode.js 24 LTS、npm、Debian trixie提供のPython 3、pip、venv、C/C++ビルドツール、Git、curl、jq、ripgrep、unzipが含まれます。
+
+Python依存関係はシステム環境へ直接インストールせず、対象リポジトリの管理方式に従ってください。特に指定がなければ、Claude Codeはcloneしたリポジトリ内に仮想環境を作成できます。
+
+```console
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+pip、npm、uvおよびXDG準拠ツールのキャッシュ先は `/home/runner/.cache` 以下に設定されています。uv自体は標準搭載せず、リポジトリの指示に従って導入します。
+
+上記以外のSDKやシステムパッケージが必要な場合は、派生イメージへ追加します。
 
 ```dockerfile
 FROM claude-code-job-runner:2.1.220
 
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv \
+    && apt-get install -y --no-install-recommends ruby \
     && rm -rf /var/lib/apt/lists/*
 USER runner
 ```

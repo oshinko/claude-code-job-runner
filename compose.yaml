@@ -12,4 +12,9 @@ services:
     env_file:
       - path: ${ENV_FILE:-.env}
         required: true
+    volumes:
+      - package-cache:/home/runner/.cache
     restart: "no"
+
+volumes:
+  package-cache:
