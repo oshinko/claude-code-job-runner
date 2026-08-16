@@ -127,6 +127,39 @@ docker compose run --rm --build runner
 
 Linuxで権限エラーやGitの所有者エラーが発生する場合は、イメージbuild時の `CONTAINER_UID` と `CONTAINER_GID` を対象リポジトリを所有するホストユーザーのUID、GIDに合わせてください。pushも行わせる場合は、リモートに必要な権限を持つ `GITHUB_TOKEN` を設定できます。
 
+## GitHub Container Registryから実行する
+
+release済みのイメージはGitHub Container Registryから取得できます。version tagは内容が固定されるため、再現性が必要な実行では `latest` ではなくversionを指定してください。
+
+```console
+docker pull ghcr.io/oshinko/claude-code-job-runner:1.2.3
+```
+
+```console
+docker run --rm \
+  -e REPOSITORY_URL=https://github.com/example/project.git \
+  -e GITHUB_TOKEN \
+  -e CLAUDE_CODE_OAUTH_TOKEN \
+  -e MAX_TURNS=30 \
+  ghcr.io/oshinko/claude-code-job-runner:1.2.3
+```
+
+公開イメージは `linux/amd64` と `linux/arm64` に対応します。runnerのversionはイメージtagで表し、イメージ内のClaude Code versionは `CLAUDE_CODE_VERSION` で独立して管理します。既存の `compose.yaml` は引き続きローカルでイメージをbuildします。
+
+### イメージをreleaseする
+
+`vMAJOR.MINOR.PATCH` 形式のGit tagをpushすると、GitHub Actionsが `v` を除いたversion tagと `latest` を公開します。例えば `v1.2.3` から次の2つが作成されます。
+
+- `ghcr.io/oshinko/claude-code-job-runner:1.2.3`
+- `ghcr.io/oshinko/claude-code-job-runner:latest`
+
+```console
+git tag -a v1.2.3 -m "Release v1.2.3"
+git push origin v1.2.3
+```
+
+GitHub Container Registryのpackageは初回publish時にprivateで作成されます。公開イメージとして提供する場合は、初回workflow完了後にGitHubのpackage settingsでvisibilityをPublicへ変更してください。
+
 ## イメージを直接buildする
 
 ```console
