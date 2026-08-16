@@ -7,6 +7,7 @@ readonly prompt="${PROMPT:-${DEFAULT_PROMPT}}"
 work_dir=''
 askpass_dir=''
 claude_pid=''
+repo_dir=''
 
 log() {
   printf '[claude-code-job-runner] %s\n' "$*" >&2
@@ -42,12 +43,8 @@ require_env() {
   [[ -n "${!name:-}" ]] || fail "${name} is required"
 }
 
-for required_name in \
-  REPOSITORY_URL \
-  GITHUB_TOKEN \
-  MAX_TURNS; do
-  require_env "${required_name}"
-done
+require_env REPOSITORY_URL
+require_env MAX_TURNS
 
 if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -n "${ANTHROPIC_API_KEY:-}" ]]; then
   fail 'set exactly one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY, not both'
@@ -55,14 +52,6 @@ fi
 if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
   fail 'set exactly one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY'
 fi
-
-[[ "${REPOSITORY_URL}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]] \
-  || fail 'REPOSITORY_URL must be an https://github.com/<owner>/<repo>[.git] URL without embedded credentials'
-
-readonly git_branch="${GIT_BRANCH:-main}"
-git check-ref-format --branch "${git_branch}" >/dev/null 2>&1 \
-  || fail 'GIT_BRANCH is not a valid branch name'
-export GIT_BRANCH="${git_branch}"
 
 [[ "${MAX_TURNS}" =~ ^[1-9][0-9]*$ ]] \
   || fail 'MAX_TURNS must be a positive integer'
@@ -86,20 +75,112 @@ EOF
   chmod 0700 "${askpass_dir}/askpass.sh"
 }
 
-work_dir="$(mktemp -d /workspace/claude-job.XXXXXX)"
-repo_dir="${work_dir}/repo"
-
-create_askpass
-export GIT_ASKPASS="${askpass_dir}/askpass.sh"
 export GIT_TERMINAL_PROMPT=0
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  create_askpass
+  export GIT_ASKPASS="${askpass_dir}/askpass.sh"
+fi
 
-log "Cloning ${REPOSITORY_URL} branch ${git_branch}"
-git clone \
-  --single-branch \
-  --branch "${git_branch}" \
-  -- \
-  "${REPOSITORY_URL}" \
-  "${repo_dir}"
+if [[ "${REPOSITORY_URL}" == /* && -z "${REPOSITORY_REVISION:-}" ]]; then
+  [[ -d "${REPOSITORY_URL}" ]] \
+    || fail 'a local REPOSITORY_URL must point to an existing directory'
+
+  repo_dir="$(cd -- "${REPOSITORY_URL}" && pwd -P)"
+  git config --global --add safe.directory "${repo_dir}"
+  repository_root="$(git -C "${repo_dir}" rev-parse --show-toplevel 2>/dev/null)" \
+    || fail 'a local REPOSITORY_URL must point to a Git repository root accessible by the runner user'
+  [[ "${repository_root}" == "${repo_dir}" ]] \
+    || fail 'a local REPOSITORY_URL must point to the Git repository root, not a subdirectory'
+
+  log "Using local repository ${repo_dir}"
+else
+  repository_is_local=0
+  if [[ "${REPOSITORY_URL}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
+    require_env GITHUB_TOKEN
+  elif [[ "${REPOSITORY_URL}" == /* ]]; then
+    repository_is_local=1
+    [[ -d "${REPOSITORY_URL}" ]] \
+      || fail 'a local REPOSITORY_URL must point to an existing directory'
+    repository_source="$(cd -- "${REPOSITORY_URL}" && pwd -P)"
+    git config --global --add safe.directory "${repository_source}"
+    repository_root="$(git -C "${repository_source}" rev-parse --show-toplevel 2>/dev/null)" \
+      || fail 'a local REPOSITORY_URL must point to a Git repository accessible by the runner user'
+    [[ "${repository_root}" == "${repository_source}" ]] \
+      || fail 'a local REPOSITORY_URL must point to the Git repository root, not a subdirectory'
+  else
+    fail 'REPOSITORY_URL must be an https://github.com/<owner>/<repo>[.git] URL or an absolute container path'
+  fi
+
+  clone_args=(clone)
+  efficient_revision_kind=''
+  if [[ -z "${REPOSITORY_REVISION:-}" ]]; then
+    clone_args+=(--single-branch)
+  elif (( repository_is_local )); then
+    if git -C "${repository_source}" show-ref --verify --quiet "refs/heads/${REPOSITORY_REVISION}"; then
+      efficient_revision_kind='branch'
+    elif git -C "${repository_source}" show-ref --verify --quiet "refs/tags/${REPOSITORY_REVISION}"; then
+      efficient_revision_kind='tag'
+    fi
+  else
+    remote_refs="$(git ls-remote --heads --tags "${REPOSITORY_URL}" \
+      "refs/heads/${REPOSITORY_REVISION}" "refs/tags/${REPOSITORY_REVISION}")" \
+      || fail 'failed to inspect remote refs for REPOSITORY_REVISION'
+    remote_branch_ref=''
+    remote_tag_ref=''
+    while IFS=$'\t' read -r _ remote_ref_name; do
+      if [[ "${remote_ref_name}" == "refs/heads/${REPOSITORY_REVISION}" ]]; then
+        remote_branch_ref="${remote_ref_name}"
+      elif [[ "${remote_ref_name}" == "refs/tags/${REPOSITORY_REVISION}" ]]; then
+        remote_tag_ref="${remote_ref_name}"
+      fi
+    done <<<"${remote_refs}"
+
+    if [[ -n "${remote_branch_ref}" ]]; then
+      efficient_revision_kind='branch'
+    elif [[ -n "${remote_tag_ref}" ]]; then
+      efficient_revision_kind='tag'
+    fi
+  fi
+
+  if [[ -n "${efficient_revision_kind}" ]]; then
+    clone_args+=(--single-branch --branch "${REPOSITORY_REVISION}")
+  fi
+
+  work_dir="$(mktemp -d /workspace/claude-job.XXXXXX)"
+  repo_dir="${work_dir}/repo"
+
+  log "Cloning ${REPOSITORY_URL}"
+  git "${clone_args[@]}" \
+    -- \
+    "${REPOSITORY_URL}" \
+    "${repo_dir}"
+
+  if [[ -n "${REPOSITORY_REVISION:-}" && -z "${efficient_revision_kind}" ]]; then
+    revision_kind='detached'
+    revision_to_resolve="${REPOSITORY_REVISION}"
+    if git -C "${repo_dir}" show-ref --verify --quiet "refs/heads/${REPOSITORY_REVISION}"; then
+      revision_kind='local-branch'
+      revision_to_resolve="refs/heads/${REPOSITORY_REVISION}"
+    elif git -C "${repo_dir}" show-ref --verify --quiet "refs/remotes/origin/${REPOSITORY_REVISION}"; then
+      revision_kind='remote-branch'
+      revision_to_resolve="refs/remotes/origin/${REPOSITORY_REVISION}"
+    elif git -C "${repo_dir}" show-ref --verify --quiet "refs/tags/${REPOSITORY_REVISION}"; then
+      revision_to_resolve="refs/tags/${REPOSITORY_REVISION}"
+    fi
+
+    resolved_revision="$(git -C "${repo_dir}" rev-parse --verify --end-of-options "${revision_to_resolve}^{commit}" 2>/dev/null)" \
+      || fail 'REPOSITORY_REVISION must resolve to a commit available in the cloned repository'
+
+    log "Checking out revision ${REPOSITORY_REVISION}"
+    if [[ "${revision_kind}" == 'local-branch' ]]; then
+      git -C "${repo_dir}" switch "${REPOSITORY_REVISION}"
+    elif [[ "${revision_kind}" == 'remote-branch' ]]; then
+      git -C "${repo_dir}" switch --track --create "${REPOSITORY_REVISION}" "refs/remotes/origin/${REPOSITORY_REVISION}"
+    else
+      git -C "${repo_dir}" switch --detach "${resolved_revision}"
+    fi
+  fi
+fi
 
 cd "${repo_dir}"
 

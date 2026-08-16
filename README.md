@@ -1,13 +1,15 @@
 # Claude Code Job Runner
 
-GitHubリポジトリをコンテナ内へcloneし、リポジトリルートの `AGENTS.md` を起点にClaude Codeを非対話実行するrunnerです。commit、push、Git identityなどのGitワークフローはrunnerでは判断せず、Claude Codeが `AGENTS.md` に従って実行します。
+GitHubリポジトリをコンテナ内へcloneするか、ホストのローカルリポジトリをbind mountし、リポジトリルートの `AGENTS.md` を起点にClaude Codeを非対話実行するrunnerです。commit、push、Git identityなどのGitワークフローはrunnerでは判断せず、Claude Codeが `AGENTS.md` に従って実行します。
 
 > このプロジェクトはAnthropicによる公式プロジェクトではありません。
 
 ## 動作の流れ
 
 1. 必須設定と認証情報を検証します。
-2. `GITHUB_TOKEN` を使って指定ブランチを一時ディレクトリへcloneし、同じ認証をClaude Codeから利用できるようにします。
+2. 次のどちらかの方法で対象リポジトリを用意します。
+   - リモートモード: `GITHUB_TOKEN` を使って一時ディレクトリへcloneし、同じ認証をClaude Codeから利用できるようにします。`REPOSITORY_REVISION` が指定されている場合はclone後にcheckoutします。
+   - ローカルモード: `REPOSITORY_REVISION` が空ならbind mountされた既存の作業ツリーをそのまま使用し、指定されていれば一時ディレクトリへcloneしてcheckoutします。
 3. `{repo_root}/AGENTS.md` の存在、非空、UTF-8を確認します。
 4. repoルートで次の要領によりClaude Codeを起動します。
 
@@ -52,7 +54,7 @@ docker compose run --rm --build runner
 docker compose run --rm runner
 ```
 
-Composeではpip、npm、uvなどのパッケージ取得キャッシュを名前付きボリュームへ保存します。コンテナを削除してもキャッシュは残り、次回以降の依存関係セットアップで再利用されます。cloneしたリポジトリ、`.venv`、`node_modules` はジョブごとに作り直します。
+Composeではpip、npm、uvなどのパッケージ取得キャッシュを名前付きボリュームへ保存します。コンテナを削除してもキャッシュは残り、次回以降の依存関係セットアップで再利用されます。cloneしたリポジトリ、`.venv`、`node_modules` はジョブごとに作り直します。ローカル作業ツリーを直接使用した場合は、リポジトリ内に作成されたファイルがホスト側にも残ります。
 
 キャッシュを削除する場合は、runnerが動作していないことを確認して次を実行します。
 
@@ -77,7 +79,53 @@ Bash:
 ENV_FILE=.env.production docker compose run --rm runner
 ```
 
-`.env` と `*.env` はGitの追跡対象から除外されています。秘密値を含むため共有、commit、ログへの貼り付けを行わず、Linuxではファイル権限も実行ユーザーだけが読めるようにしてください。
+`.env`、`*.env`、`compose.override.yaml` はGitの追跡対象から除外されています。秘密値を含むため共有、commit、ログへの貼り付けを行わず、Linuxではファイル権限も実行ユーザーだけが読めるようにしてください。
+
+## ローカルリポジトリを使う
+
+ローカル用Composeオーバーレイのテンプレートを `compose.override.yaml` へコピーします。このファイルはGitの追跡対象から除外され、通常の `docker compose` 実行時に自動で読み込まれます。
+
+PowerShell:
+
+```powershell
+Copy-Item compose.override.local.yaml compose.override.yaml
+```
+
+Bash:
+
+```console
+cp compose.override.local.yaml compose.override.yaml
+```
+
+コピーした `compose.override.yaml` の `source` をホスト側のGitリポジトリルートへ書き換えます。
+
+```yaml
+services:
+  runner:
+    volumes:
+      - type: bind
+        source: /path/to/project
+        target: ${REPOSITORY_URL}
+```
+
+続いて `.env` を次のように設定し、通常どおり実行します。
+
+```dotenv
+REPOSITORY_URL=/workspace/local-repository
+REPOSITORY_REVISION=
+```
+
+```console
+docker compose run --rm --build runner
+```
+
+`compose.override.local.yaml` はvolumeだけを追加し、環境変数は `compose.yaml` の `env_file` をそのまま使用します。`REPOSITORY_URL` はmount先となるコンテナ内の絶対パスです。対象リポジトリは `AGENTS.md` を含む必要があります。bind mountの所有者表現がコンテナと異なる環境でもGitが扱えるように、runnerはこのパスだけをコンテナ内のGit `safe.directory` に登録します。
+
+`.env` の `REPOSITORY_REVISION` が未指定または空の場合は、現在checkoutされているブランチと未コミットの差分を含む作業ツリーを直接使用し、Claude Codeによる編集、commitなどの変更もホスト側へ残ります。重要な変更は事前にcommitまたは退避してください。
+
+`REPOSITORY_REVISION` を指定した場合は、ローカルリポジトリを一時ディレクトリへcloneし、指定されたブランチ、タグ、コミットハッシュ、その他のcommit-ishをcheckoutして実行します。ブランチはローカルの追跡ブランチとして、それ以外はdetached HEADとしてcheckoutします。branchまたはtagと判定できる場合は `--single-branch --branch` で対象の履歴だけをcloneし、ハッシュやその他のcommit-ishでは解決に必要な履歴を取得するため通常のcloneを行います。指定対象はcloneで取得できる履歴に含まれている必要があります。ホスト作業ツリーの未コミット差分は含まれず、Claude Codeが一時cloneへ残した未commitの変更はコンテナ終了時に破棄されます。
+
+Linuxで権限エラーやGitの所有者エラーが発生する場合は、イメージbuild時の `CONTAINER_UID` と `CONTAINER_GID` を対象リポジトリを所有するホストユーザーのUID、GIDに合わせてください。pushも行わせる場合は、リモートに必要な権限を持つ `GITHUB_TOKEN` を設定できます。
 
 ## イメージを直接buildする
 
@@ -103,19 +151,26 @@ docker build \
 
 | 変数 | 内容 |
 | --- | --- |
-| `REPOSITORY_URL` | `https://github.com/<owner>/<repo>.git` 形式のURL |
-| `GITHUB_TOKEN` | 対象repoとタスクに必要な最小権限を持つtoken |
+| `REPOSITORY_URL` | GitHub HTTPS URL。ローカル用Composeではコンテナ内の絶対mountパス |
 | `MAX_TURNS` | Claude Codeの最大agentic turn数。1以上の整数 |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth認証。API keyとは排他的 |
 | `ANTHROPIC_API_KEY` | Anthropic API認証。OAuth tokenとは排他的 |
 
 Claude認証は `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のどちらか一方だけを指定します。
 
+リモートモードでは次の設定も必須です。
+
+| 変数 | 内容 |
+| --- | --- |
+| `GITHUB_TOKEN` | 対象repoとタスクに必要な最小権限を持つtoken |
+
+ローカル用Composeでは `GITHUB_TOKEN` は任意で、pushなどに必要な場合だけ使用します。
+
 任意設定:
 
 | 変数 | 内容 |
 | --- | --- |
-| `GIT_BRANCH` | checkoutする既存ブランチ。未指定または空の場合は `main` |
+| `REPOSITORY_REVISION` | checkoutするブランチ、タグ、コミットハッシュ、commit-ish。未指定時はリモートのデフォルトブランチを使用し、ローカルパスではcloneせず直接使用 |
 | `MAX_BUDGET_USD` | 指定時に `--max-budget-usd` として渡す正数 |
 | `CLAUDE_MODEL` | 指定時に `--model` として渡すmodel名またはalias |
 | `PROMPT` | Claude Codeへ渡すタスク。未指定または空の場合はrunnerの既定文 |
@@ -129,7 +184,7 @@ OAuth tokenを使う例です。
 ```console
 docker run --rm \
   -e REPOSITORY_URL=https://github.com/example/project.git \
-  -e GIT_BRANCH=main \
+  -e REPOSITORY_REVISION=main \
   -e GITHUB_TOKEN \
   -e CLAUDE_CODE_OAUTH_TOKEN \
   -e MAX_TURNS=30 \
@@ -137,6 +192,17 @@ docker run --rm \
 ```
 
 API keyを使う場合は `CLAUDE_CODE_OAUTH_TOKEN` の代わりに `ANTHROPIC_API_KEY` を渡します。秘密値をコマンドラインへ直接書かず、呼び出し元のsecret管理機能から環境変数として注入してください。
+
+ローカルリポジトリを直接mountする例です。
+
+```console
+docker run --rm \
+  --mount type=bind,source=/path/to/project,target=/workspace/local-repository \
+  -e REPOSITORY_URL=/workspace/local-repository \
+  -e CLAUDE_CODE_OAUTH_TOKEN \
+  -e MAX_TURNS=30 \
+  claude-code-job-runner:2.1.220
+```
 
 ## 利用可能な開発環境
 

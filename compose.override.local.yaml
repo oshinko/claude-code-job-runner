@@ -1,0 +1,7 @@
+services:
+  runner:
+    volumes:
+      - type: bind
+        # Replace this value in compose.override.yaml with the host repository root.
+        source: /path/to/repository
+        target: ${REPOSITORY_URL:?Set REPOSITORY_URL to the absolute container mount path}
