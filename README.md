@@ -125,7 +125,7 @@ docker compose run --rm --build runner
 
 `REPOSITORY_REVISION` を指定した場合は、ローカルリポジトリを一時ディレクトリへcloneし、指定されたブランチ、タグ、コミットハッシュ、その他のcommit-ishをcheckoutして実行します。ブランチはローカルの追跡ブランチとして、それ以外はdetached HEADとしてcheckoutします。branchまたはtagと判定できる場合は `--single-branch --branch` で対象の履歴だけをcloneし、ハッシュやその他のcommit-ishでは解決に必要な履歴を取得するため通常のcloneを行います。指定対象はcloneで取得できる履歴に含まれている必要があります。ホスト作業ツリーの未コミット差分は含まれず、Claude Codeが一時cloneへ残した未commitの変更はコンテナ終了時に破棄されます。
 
-Linuxで権限エラーやGitの所有者エラーが発生する場合は、イメージbuild時の `CONTAINER_UID` と `CONTAINER_GID` を対象リポジトリを所有するホストユーザーのUID、GIDに合わせてください。pushも行わせる場合は、リモートに必要な権限を持つ `GITHUB_TOKEN` を設定できます。
+Linuxで権限エラーやGitの所有者エラーが発生する場合は、イメージbuild時の `CONTAINER_UID` と `CONTAINER_GID` を対象リポジトリを所有するホストユーザーのUID、GIDに合わせるか、後述のroot実行を選択してください。pushも行わせる場合は、リモートに必要な権限を持つ `GITHUB_TOKEN` を設定できます。
 
 ## GitHub Container Registryから実行する
 
@@ -236,6 +236,24 @@ docker run --rm \
   -e MAX_TURNS=30 \
   claude-code-job-runner:2.1.233
 ```
+
+### rootで実行する
+
+既定の `runner` ユーザーでbind mount先へ書き込めない場合は、利用側の判断で `--user 0:0` を指定できます。イメージの既定ユーザーは引き続き非rootの `runner` です。
+
+```console
+docker run --rm \
+  --user 0:0 \
+  --mount type=bind,source=/path/to/project,target=/workspace/local-repository \
+  -e REPOSITORY_URL=/workspace/local-repository \
+  -e CLAUDE_CODE_OAUTH_TOKEN \
+  -e MAX_TURNS=30 \
+  claude-code-job-runner:2.1.233
+```
+
+`--user 0:0` は実行UIDとGIDだけを変更します。root実行時も `XDG_CACHE_HOME`、pip、npm、uvのキャッシュ先は `/home/runner/.cache` 以下です。bind mountまたは永続volume内にはroot所有のファイルが作成される場合があります。runnerは所有権の変更や復元を行わないため、必要な調整は利用側で行ってください。
+
+GitHub-hosted runnerでcheckout済みのworkspaceを使う場合は、bind mountのsourceに `$GITHUB_WORKSPACE` を指定できます。後続stepからworkspaceを非rootで更新する場合は、必要に応じてコンテナ終了後に所有権を調整してください。
 
 ## 利用可能な開発環境
 
