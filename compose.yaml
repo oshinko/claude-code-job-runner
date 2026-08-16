@@ -5,10 +5,10 @@ services:
     build:
       context: .
       args:
-        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.220}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.233}
         CONTAINER_UID: ${CONTAINER_UID:-10001}
         CONTAINER_GID: ${CONTAINER_GID:-10001}
-    image: claude-code-job-runner:${CLAUDE_CODE_VERSION:-2.1.220}
+    image: claude-code-job-runner:${CLAUDE_CODE_VERSION:-2.1.233}
     env_file:
       - path: ${ENV_FILE:-.env}
         required: true

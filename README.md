@@ -163,14 +163,14 @@ GitHub Container Registryのpackageは初回publish時にprivateで作成され�
 ## イメージを直接buildする
 
 ```console
-docker build -t claude-code-job-runner:2.1.220 .
+docker build -t claude-code-job-runner:2.1.233 .
 ```
 
 Claude Codeのバージョンはbuild argumentで変更できます。
 
 ```console
 docker build \
-  --build-arg CLAUDE_CODE_VERSION=2.1.220 \
+  --build-arg CLAUDE_CODE_VERSION=2.1.233 \
   --build-arg CONTAINER_UID=10001 \
   --build-arg CONTAINER_GID=10001 \
   -t claude-code-job-runner:custom .
@@ -221,7 +221,7 @@ docker run --rm \
   -e GITHUB_TOKEN \
   -e CLAUDE_CODE_OAUTH_TOKEN \
   -e MAX_TURNS=30 \
-  claude-code-job-runner:2.1.220
+  claude-code-job-runner:2.1.233
 ```
 
 API keyを使う場合は `CLAUDE_CODE_OAUTH_TOKEN` の代わりに `ANTHROPIC_API_KEY` を渡します。秘密値をコマンドラインへ直接書かず、呼び出し元のsecret管理機能から環境変数として注入してください。
@@ -234,7 +234,7 @@ docker run --rm \
   -e REPOSITORY_URL=/workspace/local-repository \
   -e CLAUDE_CODE_OAUTH_TOKEN \
   -e MAX_TURNS=30 \
-  claude-code-job-runner:2.1.220
+  claude-code-job-runner:2.1.233
 ```
 
 ## 利用可能な開発環境
@@ -253,7 +253,7 @@ pip、npm、uvおよびXDG準拠ツールのキャッシュ先は `/home/runner/
 上記以外のSDKやシステムパッケージが必要な場合は、派生イメージへ追加します。
 
 ```dockerfile
-FROM claude-code-job-runner:2.1.220
+FROM claude-code-job-runner:2.1.233
 
 USER root
 RUN apt-get update \
