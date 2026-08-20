@@ -67,27 +67,65 @@ create_askpass() {
   askpass_dir="$(mktemp -d /tmp/claude-git-askpass.XXXXXX)"
   cat >"${askpass_dir}/askpass.sh" <<'EOF'
 #!/usr/bin/env sh
+prompt_url="${1#*\'}"
+if [ "${prompt_url}" = "$1" ]; then
+  exit 0
+fi
+prompt_url="${prompt_url%%\'*}"
+case "${prompt_url}" in
+  http://*|https://*) ;;
+  *) exit 0 ;;
+esac
+prompt_authority="${prompt_url#*://}"
+prompt_authority="${prompt_authority%%[/?#]*}"
+prompt_authority="${prompt_authority##*@}"
+prompt_authority="$(printf '%s' "${prompt_authority}" | tr '[:upper:]' '[:lower:]')"
+if [ "${prompt_authority}" != "${GITHUB_ASKPASS_AUTHORITY}" ]; then
+  exit 0
+fi
 case "$1" in
   *Username*) printf '%s\n' 'x-access-token' ;;
-  *) printf '%s\n' "${GITHUB_TOKEN}" ;;
+  *Password*) printf '%s\n' "${GITHUB_TOKEN}" ;;
 esac
 EOF
   chmod 0700 "${askpass_dir}/askpass.sh"
 }
 
-fail_remote_git_operation() {
+configure_github_askpass() {
+  local server_url="${GITHUB_SERVER_URL:-https://github.com}"
+  local server_authority=''
+  case "${server_url}" in
+    http://*|https://*)
+      server_authority="${server_url#*://}"
+      server_authority="${server_authority%%[/?#]*}"
+      ;;
+    *)
+      fail 'GITHUB_SERVER_URL must be an http:// or https:// URL when GITHUB_TOKEN is set'
+      ;;
+  esac
+  [[ -n "${server_authority}" && "${server_authority}" != *'@'* ]] \
+    || fail 'GITHUB_SERVER_URL must include a valid host without user information'
+  export GITHUB_ASKPASS_AUTHORITY="${server_authority,,}"
+  create_askpass
+}
+
+fail_git_operation() {
   local operation="$1"
-  if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. If the repository is private or requires authentication, set GITHUB_TOKEN with Contents read access"
+  if [[ "${REPOSITORY_URL}" == /* ]]; then
+    fail "failed to ${operation} local repository ${REPOSITORY_URL}; see the Git error above"
   fi
-  fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. Check that GITHUB_TOKEN can access the repository with Contents read permission"
+  if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+    fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. Check the repository source, network, and protocol-specific authentication"
+  fi
+  fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. GITHUB_TOKEN is only offered to the GITHUB_SERVER_URL host (github.com by default); check that host and the token's repository access"
 }
 
 export GIT_TERMINAL_PROMPT=0
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  create_askpass
+  configure_github_askpass
   export GIT_ASKPASS="${askpass_dir}/askpass.sh"
 fi
+git config --global protocol.ext.allow always
 
 if [[ "${REPOSITORY_URL}" == /* && -z "${REPOSITORY_REVISION:-}" ]]; then
   [[ -d "${REPOSITORY_URL}" ]] \
@@ -113,8 +151,6 @@ else
       || fail 'a local REPOSITORY_URL must point to a Git repository accessible by the runner user'
     [[ "${repository_root}" == "${repository_source}" ]] \
       || fail 'a local REPOSITORY_URL must point to the Git repository root, not a subdirectory'
-  elif [[ ! "${REPOSITORY_URL}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
-    fail 'REPOSITORY_URL must be an https://github.com/<owner>/<repo>[.git] URL or an absolute container path'
   fi
 
   clone_args=(clone)
@@ -128,9 +164,9 @@ else
       efficient_revision_kind='tag'
     fi
   else
-    if ! remote_refs="$(git ls-remote --heads --tags "${REPOSITORY_URL}" \
+    if ! remote_refs="$(git ls-remote --heads --tags -- "${REPOSITORY_URL}" \
       "refs/heads/${REPOSITORY_REVISION}" "refs/tags/${REPOSITORY_REVISION}")"; then
-      fail_remote_git_operation 'inspect remote refs for'
+      fail_git_operation 'inspect remote refs for'
     fi
     remote_branch_ref=''
     remote_tag_ref=''
@@ -161,7 +197,7 @@ else
     -- \
     "${REPOSITORY_URL}" \
     "${repo_dir}"; then
-    fail_remote_git_operation 'clone'
+    fail_git_operation 'clone'
   fi
 
   if [[ -n "${REPOSITORY_REVISION:-}" && -z "${efficient_revision_kind}" ]]; then

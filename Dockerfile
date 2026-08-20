@@ -20,6 +20,7 @@ RUN apt-get update \
         curl \
         git \
         jq \
+        openssh-client \
         python-is-python3 \
         python3-pip \
         python3-venv \

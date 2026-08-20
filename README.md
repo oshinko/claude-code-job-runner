@@ -1,6 +1,6 @@
 # Claude Code Job Runner
 
-GitHubリポジトリをコンテナ内へcloneするか、ホストのローカルリポジトリをbind mountし、リポジトリルートの `AGENTS.md` を起点にClaude Codeを非対話実行するrunnerです。commit、push、Git identityなどのGitワークフローはrunnerでは判断せず、Claude Codeが `AGENTS.md` に従って実行します。
+Gitリポジトリをコンテナ内へcloneするか、ホストのローカルリポジトリをbind mountし、リポジトリルートの `AGENTS.md` を起点にClaude Codeを非対話実行するrunnerです。commit、push、Git identityなどのGitワークフローはrunnerでは判断せず、Claude Codeが `AGENTS.md` に従って実行します。
 
 > このプロジェクトはAnthropicによる公式プロジェクトではありません。
 
@@ -184,20 +184,23 @@ docker build \
 
 | 変数 | 内容 |
 | --- | --- |
-| `REPOSITORY_URL` | GitHub HTTPS URL。ローカル用Composeではコンテナ内の絶対mountパス |
+| `REPOSITORY_URL` | `git clone`へ渡すrepository source。ローカル作業ツリーを直接使う場合はコンテナ内の絶対mountパス |
 | `MAX_TURNS` | Claude Codeの最大agentic turn数。1以上の整数 |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth認証。API keyとは排他的 |
 | `ANTHROPIC_API_KEY` | Anthropic API認証。OAuth tokenとは排他的 |
 
 Claude認証は `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のどちらか一方だけを指定します。
 
-GitHub認証が必要な場合は次の設定も使用します。
+GitHubまたはGitHub Enterprise Serverの認証が必要な場合は次の設定も使用します。
 
 | 変数 | 内容 |
 | --- | --- |
-| `GITHUB_TOKEN` | 対象repoとタスクに必要な最小権限を持つtoken |
+| `GITHUB_TOKEN` | 対象のGitHub/GitHub Enterprise Server repoとタスクに必要な最小権限を持つtoken |
+| `GITHUB_SERVER_URL` | tokenを渡すGitHub serverのURL。`GITHUB_TOKEN` 設定時の既定値は `https://github.com` |
 
-`GITHUB_TOKEN` は任意です。public repositoryのcloneと認証を必要としないローカルGit操作だけなら省略できます。private repositoryのclone、push、その他の認証付きGit操作を行う場合は設定してください。remote refの確認またはcloneに失敗した場合、runnerはGitのエラーに加えて、tokenの有無に応じた確認事項を表示します。
+絶対パス以外の `REPOSITORY_URL` はschemeやhostを制限せず、そのままGitへ渡します。HTTPS、SSH、scp形式、`git://`、`file://`、Git remote helperなど、実行環境のGitが解釈できるsourceを使用できます。先頭が `/` の絶対パスだけはローカルリポジトリとして検証し、`REPOSITORY_REVISION` が空ならcloneせず直接使用します。`ext::` remote helperも有効化されており任意コマンドを実行できるため、`REPOSITORY_URL` は信頼できる呼び出し元だけが設定してください。
+
+`GITHUB_TOKEN` は任意です。設定されるとrunnerはGit askpassを用意し、HTTPS認証先のauthority（hostとport）が `GITHUB_SERVER_URL` と一致する場合だけusername `x-access-token` とtokenを返します。`GITHUB_SERVER_URL` が空または未設定なら `https://github.com` として扱います。GitHub Enterprise ServerをGitHub Actionsから利用する場合はActionsが設定する値をそのまま渡せます。ローカル環境などでは対象serverのURLを明示してください。別host、SSH、その他のprotocolには `GITHUB_TOKEN` を返しません。remote refの確認またはcloneに失敗した場合、runnerはGitのエラーに加えて、tokenの有無に応じた確認事項を表示します。
 
 任意設定:
 
@@ -268,6 +271,7 @@ jobs:
             --mount type=bind,source="$GITHUB_WORKSPACE",target=/workspace/local-repository \
             -e REPOSITORY_URL=/workspace/local-repository \
             -e GITHUB_TOKEN \
+            -e GITHUB_SERVER_URL \
             -e CLAUDE_CODE_OAUTH_TOKEN \
             -e MAX_TURNS=30 \
             ghcr.io/oshinko/claude-code-job-runner:1.2.3
@@ -279,7 +283,9 @@ jobs:
 
 ## 利用可能な開発環境
 
-runnerにはNode.js 24 LTS、npm、Debian trixie提供のPython 3、pip、venv、C/C++ビルドツール、Git、curl、jq、ripgrep、unzipが含まれます。
+runnerにはNode.js 24 LTS、npm、Debian trixie提供のPython 3、pip、venv、C/C++ビルドツール、Git、OpenSSH client、curl、jq、ripgrep、unzipが含まれます。
+
+SSH形式のrepository sourceは利用できますが、秘密鍵、SSH agent、SSH config、`known_hosts` はイメージに含まれません。接続先とタスクだけに権限を限定した専用credentialを呼び出し側で用意し、ホスト鍵を検証できる状態でコンテナへ提供してください。
 
 Python依存関係はシステム環境へ直接インストールせず、対象リポジトリの管理方式に従ってください。特に指定がなければ、Claude Codeはcloneしたリポジトリ内に仮想環境を作成できます。
 
@@ -322,14 +328,14 @@ runnerはClaude Code終了後にGit操作を補完・検査しません。commit
 
 このrunnerは `bypassPermissions` でClaude Codeを起動します。対象は自身で管理する信頼済みリポジトリに限定してください。
 
-`GITHUB_TOKEN` はcredential URLへ保存しませんが、Claude Code自身がGit操作を行えるように、そのプロセスから利用可能です。次の条件を守ってください。
+`GITHUB_TOKEN` はcredential URLへ保存しませんが、Claude Code自身がGit操作を行えるように、そのプロセスとGit askpassから利用可能です。askpassは `GITHUB_SERVER_URL` とauthorityが一致するHTTPS接続だけにtokenを返します。ただしClaude Codeのプロセスからは環境変数自体を参照できるため、信頼できるリポジトリだけを使用してください。次の条件を守ってください。
 
 - 認証付きGit操作が不要なら `GITHUB_TOKEN` をコンテナへ渡さない。
 - GitHub fine-grained tokenまたはGitHub Appの短寿命tokenを使う。
 - tokenの対象を実行対象repoだけに限定する。
 - cloneだけならContents read、pushさせる場合はContents writeとし、タスクに不要な権限を付与しない。
 - 第三者の未検証repoや未信頼のpull requestを実行しない。
-- runnerコンテナへSSH鍵、クラウド資格情報、ホストのDocker socketをmountしない。
+- 不要なSSH鍵やクラウド資格情報、ホストのDocker socketをrunnerコンテナへmountしない。SSH認証が必要な場合も、対象repository専用の短寿命credentialまたは権限を限定したSSH agentを使用する。
 
 GitHub Actionsでcheckout済みrepositoryからcredentialも除外したい場合は、`actions/checkout` に `persist-credentials: false` を指定してください。既定ではcheckout用credentialがrepositoryのGit設定に保持されるため、`GITHUB_TOKEN` 環境変数をコンテナへ渡さないだけではGit認証を完全に除外できません。
 
