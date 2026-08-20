@@ -129,7 +129,7 @@ Linuxで権限エラーやGitの所有者エラーが発生する場合は、イ
 
 ## GitHub Container Registryから実行する
 
-release済みのイメージはGitHub Container Registryから取得できます。version tagは内容が固定されるため、再現性が必要な実行では `latest` ではなくversionを指定してください。
+release済みのイメージはGitHub Container Registryから取得できます。`latest` はreleaseのたびに更新されるため、特定releaseを使う場合はversion tagまたはbuild識別tagを指定してください。
 
 ```console
 docker pull ghcr.io/oshinko/claude-code-job-runner:1.2.3
@@ -148,15 +148,18 @@ docker run --rm \
 
 ### イメージをreleaseする
 
-`vMAJOR.MINOR.PATCH` 形式のGit tagをpushすると、GitHub Actionsが `v` を除いたversion tagと `latest` を公開します。例えば `v1.2.3` から次の2つが作成されます。
+`vMAJOR.MINOR.PATCH` 形式のGit tagをpushすると、GitHub Actionsが `v` を除いたversion tag、`latest`、build識別tagを1回のbuildで公開します。build識別tagは `<version>-gh<GitHub Actions run number>.g<commit SHAの先頭7桁>` 形式です。例えばrun numberが `42`、commit SHAが `abcdef0...` の `v1.2.3` から次の3つが作成されます。
 
 - `ghcr.io/oshinko/claude-code-job-runner:1.2.3`
 - `ghcr.io/oshinko/claude-code-job-runner:latest`
+- `ghcr.io/oshinko/claude-code-job-runner:1.2.3-gh42.gabcdef0`
 
 ```console
 git tag -a v1.2.3 -m "Release v1.2.3"
 git push origin v1.2.3
 ```
+
+同じworkflow runを再実行した場合、run numberとcommit SHAは変わらないため、同じ3つのimage tagが更新されます。`main` ブランチへのpushではimageをbuild・公開しません。
 
 GitHub Container Registryのpackageは初回publish時にprivateで作成されます。公開イメージとして提供する場合は、初回workflow完了後にGitHubのpackage settingsでvisibilityをPublicへ変更してください。
 
