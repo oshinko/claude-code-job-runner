@@ -46,11 +46,80 @@ require_env() {
 require_env REPOSITORY_URL
 require_env MAX_TURNS
 
-if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  fail 'set exactly one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY, not both'
+# Empty credential variables still take precedence over WIF credentials in the
+# Anthropic SDK, so remove empty values before selecting an authentication mode.
+# https://platform.claude.com/docs/en/manage-claude/wif-reference#credential-precedence
+auth_environment_names=(
+  CLAUDE_CODE_OAUTH_TOKEN
+  ANTHROPIC_API_KEY
+  ANTHROPIC_AUTH_TOKEN
+  ANTHROPIC_PROFILE
+  ANTHROPIC_FEDERATION_RULE_ID
+  ANTHROPIC_ORGANIZATION_ID
+  ANTHROPIC_SERVICE_ACCOUNT_ID
+  ANTHROPIC_WORKSPACE_ID
+  ANTHROPIC_IDENTITY_TOKEN_FILE
+  ANTHROPIC_IDENTITY_TOKEN
+)
+for name in "${auth_environment_names[@]}"; do
+  if [[ -z "${!name:-}" ]]; then
+    unset "${name}"
+  fi
+done
+
+if [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+  fail 'ANTHROPIC_AUTH_TOKEN is not supported; use CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or Workload Identity Federation'
 fi
-if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  fail 'set exactly one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY'
+if [[ -n "${ANTHROPIC_PROFILE:-}" ]]; then
+  fail 'ANTHROPIC_PROFILE is not supported; configure Workload Identity Federation with environment variables'
+fi
+
+wif_environment_names=(
+  ANTHROPIC_FEDERATION_RULE_ID
+  ANTHROPIC_ORGANIZATION_ID
+  ANTHROPIC_SERVICE_ACCOUNT_ID
+  ANTHROPIC_WORKSPACE_ID
+  ANTHROPIC_IDENTITY_TOKEN_FILE
+  ANTHROPIC_IDENTITY_TOKEN
+)
+wif_is_configured=0
+for name in "${wif_environment_names[@]}"; do
+  if [[ -n "${!name:-}" ]]; then
+    wif_is_configured=1
+    break
+  fi
+done
+
+authentication_mode_count=0
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  ((authentication_mode_count += 1))
+fi
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  ((authentication_mode_count += 1))
+fi
+if (( wif_is_configured )); then
+  require_env ANTHROPIC_FEDERATION_RULE_ID
+  require_env ANTHROPIC_ORGANIZATION_ID
+  require_env ANTHROPIC_SERVICE_ACCOUNT_ID
+
+  if [[ -n "${ANTHROPIC_IDENTITY_TOKEN_FILE:-}" && -n "${ANTHROPIC_IDENTITY_TOKEN:-}" ]]; then
+    fail 'set exactly one of ANTHROPIC_IDENTITY_TOKEN_FILE or ANTHROPIC_IDENTITY_TOKEN, not both'
+  fi
+  if [[ -z "${ANTHROPIC_IDENTITY_TOKEN_FILE:-}" && -z "${ANTHROPIC_IDENTITY_TOKEN:-}" ]]; then
+    fail 'set exactly one of ANTHROPIC_IDENTITY_TOKEN_FILE or ANTHROPIC_IDENTITY_TOKEN for Workload Identity Federation'
+  fi
+  if [[ -n "${ANTHROPIC_IDENTITY_TOKEN_FILE:-}" ]]; then
+    [[ -f "${ANTHROPIC_IDENTITY_TOKEN_FILE}" && -r "${ANTHROPIC_IDENTITY_TOKEN_FILE}" ]] \
+      || fail 'ANTHROPIC_IDENTITY_TOKEN_FILE must point to a readable file'
+    [[ -s "${ANTHROPIC_IDENTITY_TOKEN_FILE}" ]] \
+      || fail 'ANTHROPIC_IDENTITY_TOKEN_FILE must not be empty'
+  fi
+
+  ((authentication_mode_count += 1))
+fi
+
+if (( authentication_mode_count != 1 )); then
+  fail 'set exactly one authentication method: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or Workload Identity Federation'
 fi
 
 [[ "${MAX_TURNS}" =~ ^[1-9][0-9]*$ ]] \

@@ -42,7 +42,7 @@ Bash:
 cp .env.example .env
 ```
 
-`.env` では `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のどちらか一方だけに値を設定します。その後、次のコマンドでイメージのbuildと1回限りのrunner実行を行えます。
+`.env` ではClaude OAuth、Anthropic API key、Workload Identity Federation（WIF）のいずれか一方式だけを設定します。その後、次のコマンドでイメージのbuildと1回限りのrunner実行を行えます。
 
 ```console
 docker compose run --rm --build runner
@@ -189,10 +189,18 @@ docker build \
 | --- | --- |
 | `REPOSITORY_URL` | `git clone`へ渡すrepository source。ローカル作業ツリーを直接使う場合はコンテナ内の絶対mountパス |
 | `MAX_TURNS` | Claude Codeの最大agentic turn数。1以上の整数 |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth認証。API keyとは排他的 |
-| `ANTHROPIC_API_KEY` | Anthropic API認証。OAuth tokenとは排他的 |
 
-Claude認証は `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のどちらか一方だけを指定します。
+Claude認証は次のいずれか一方式だけを指定します。
+
+| 認証方式 | 必須変数 |
+| --- | --- |
+| Claude OAuth | `CLAUDE_CODE_OAUTH_TOKEN` |
+| Anthropic API key | `ANTHROPIC_API_KEY` |
+| Workload Identity Federation | `ANTHROPIC_FEDERATION_RULE_ID`、`ANTHROPIC_ORGANIZATION_ID`、`ANTHROPIC_SERVICE_ACCOUNT_ID`、および `ANTHROPIC_IDENTITY_TOKEN_FILE` または `ANTHROPIC_IDENTITY_TOKEN` の一方 |
+
+WIFのfederation ruleが複数workspaceで有効な場合は `ANTHROPIC_WORKSPACE_ID` も必要です。単一workspaceだけに紐づくruleでは省略できます。`ANTHROPIC_PROFILE` と `ANTHROPIC_AUTH_TOKEN` はこのrunnerの認証方式として扱いません。
+
+Anthropic SDKでは、空文字の `ANTHROPIC_API_KEY` や `ANTHROPIC_AUTH_TOKEN` も認証情報として選択され、WIFより優先されます。このrunnerは空の認証関連環境変数を起動前に `unset` します。詳細はAnthropic公式の [WIF reference - Credential precedence](https://platform.claude.com/docs/en/manage-claude/wif-reference#credential-precedence) を参照してください。
 
 GitHubまたはGitHub Enterprise Serverの認証が必要な場合は次の設定も使用します。
 
@@ -215,6 +223,30 @@ GitHubまたはGitHub Enterprise Serverの認証が必要な場合は次の設�
 | `PROMPT` | Claude Codeへ渡すタスク。未指定または空の場合はrunnerの既定文 |
 
 `PROMPT`には実行ごとの短い指示を指定できます。詳細な要件はリポジトリ内の文書に置き、例えば `docs/tasks/example.mdを参照して実装してください。` のように指定します。複数行の長い指示は `.env` ではなく、リポジトリ内の文書で管理してください。
+
+## Workload Identity Federationを使う
+
+WIFは、OIDC identity tokenをAnthropicの短寿命access tokenへ交換し、長寿命のAPI keyを保存せずにClaude APIを利用する仕組みです。Claude Pro/Max契約のOAuth認証を置き換えるものではなく、federation ruleが紐づくAnthropic organizationのAPI利用として課金されます。概要と設定方法はAnthropic公式の [Workload Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation) を参照してください。
+
+Claude Consoleの Settings → Workload identity でservice account、issuer、federation ruleを作成します。通常のClaude Code実行だけならMessagesとModelsに限定された `workspace:inference` を最小権限として使用し、FilesやSkillsなども必要な場合だけ `workspace:developer` を使用してください。ruleのaudienceは `https://api.anthropic.com` とし、OIDC subjectとclaimsは対象repositoryやprotected branchなど必要最小限のworkloadだけに制限します。GitHub Actionsのclaimとrule設定はAnthropic公式の [Use WIF with GitHub Actions](https://platform.claude.com/docs/en/manage-claude/wif-providers/github-actions) を参照してください。
+
+実行時は、Consoleで作成したresourceのIDとIdPが発行したidentity tokenを渡します。長時間実行ではidentity tokenが更新されるため、環境変数へ直接入れる `ANTHROPIC_IDENTITY_TOKEN` より、更新可能なファイルを指定する `ANTHROPIC_IDENTITY_TOKEN_FILE` を推奨します。
+
+```console
+docker run --rm \
+  --mount type=bind,source=/path/to/anthropic-wif,target=/var/run/secrets/anthropic.com,readonly \
+  -e REPOSITORY_URL=https://github.com/example/project.git \
+  -e GITHUB_TOKEN \
+  -e MAX_TURNS=30 \
+  -e ANTHROPIC_FEDERATION_RULE_ID \
+  -e ANTHROPIC_ORGANIZATION_ID \
+  -e ANTHROPIC_SERVICE_ACCOUNT_ID \
+  -e ANTHROPIC_WORKSPACE_ID \
+  -e ANTHROPIC_IDENTITY_TOKEN_FILE=/var/run/secrets/anthropic.com/token \
+  claude-code-job-runner:2.1.233
+```
+
+`ANTHROPIC_IDENTITY_TOKEN_FILE` はコンテナから読み取り可能な非空ファイルを指す必要があります。ローテーションで更新されるsymlinkも使用できます。identity tokenや交換後のaccess tokenをログ、artifact、cacheへ保存しないでください。
 
 ## docker runによる実行例
 
@@ -283,6 +315,89 @@ jobs:
 `REPOSITORY_REVISION` は指定せず、checkout済みの作業ツリーを直接使用します。commit、pushを含むGit操作はコンテナ内で完結させてください。コンテナが新しく作成したファイルはUID、GID `10001:10001` の所有になる場合があります。この例では後続stepからworkspaceを更新しないことを前提とし、所有権は復元しません。
 
 `chmod -R a+rwX` はworkspace内の全ディレクトリとファイルへ広い権限を付与します。信頼できるリポジトリとworkflowに限定し、同じjobで未信頼のコードを実行しないでください。
+
+### GitHub ActionsでWorkload Identity Federationを使う
+
+GitHub Actionsではjobへ `id-token: write` を付与し、GitHubが発行するOIDC JWTを `ANTHROPIC_IDENTITY_TOKEN_FILE` として渡せます。GitHubのJWTは約5分で期限切れになるため、この例では4分ごとにホスト側のファイルを更新します。コンテナへはAnthropic向けの短寿命JWTだけをmountし、任意のaudience用JWTを発行できる `ACTIONS_ID_TOKEN_REQUEST_TOKEN` は渡しません。
+
+```yaml
+name: Run Claude Code with WIF
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Make workspace writable
+        run: sudo chmod -R a+rwX "$GITHUB_WORKSPACE"
+
+      - name: Run Claude Code
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+        run: |
+          set -Eeuo pipefail
+
+          token_dir="${RUNNER_TEMP}/anthropic-wif"
+          token_file="${token_dir}/token"
+          mkdir -p -- "${token_dir}"
+          chmod 0755 "${token_dir}"
+
+          fetch_identity_token() {
+            local next_token="${token_dir}/token.next"
+            umask 077
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" \
+              | jq -er '.value' >"${next_token}"
+            # The image runs as UID 10001, so the short-lived token must be
+            # readable across the bind mount on this isolated hosted runner.
+            chmod 0444 "${next_token}"
+            mv -f -- "${next_token}" "${token_file}"
+          }
+
+          fetch_identity_token
+          (
+            while sleep 240; do
+              fetch_identity_token
+            done
+          ) &
+          refresh_pid=$!
+
+          cleanup_wif() {
+            kill "${refresh_pid}" 2>/dev/null || true
+            wait "${refresh_pid}" 2>/dev/null || true
+            rm -f -- "${token_dir}/token.next" "${token_file}"
+            rmdir -- "${token_dir}" 2>/dev/null || true
+          }
+          trap cleanup_wif EXIT
+
+          docker run --rm \
+            --mount type=bind,source="$GITHUB_WORKSPACE",target=/workspace/local-repository \
+            --mount type=bind,source="${token_dir}",target=/var/run/secrets/anthropic.com,readonly \
+            -e REPOSITORY_URL=/workspace/local-repository \
+            -e GITHUB_TOKEN \
+            -e MAX_TURNS=30 \
+            -e ANTHROPIC_FEDERATION_RULE_ID \
+            -e ANTHROPIC_ORGANIZATION_ID \
+            -e ANTHROPIC_SERVICE_ACCOUNT_ID \
+            -e ANTHROPIC_WORKSPACE_ID \
+            -e ANTHROPIC_IDENTITY_TOKEN_FILE=/var/run/secrets/anthropic.com/token \
+            ghcr.io/oshinko/claude-code-job-runner:1.2.3
+```
+
+resource IDは秘密値ではないため、この例ではGitHub Actions Variablesを使用しています。federation ruleが単一workspaceだけに紐づく場合は `ANTHROPIC_WORKSPACE_ID` の設定と `-e`を省略できます。ruleはこのworkflowを実行するrepositoryとbranchまたはGitHub Environmentへ限定し、forkから実行される未信頼のpull requestにtokenを発行しないでください。
 
 ## 利用可能な開発環境
 
