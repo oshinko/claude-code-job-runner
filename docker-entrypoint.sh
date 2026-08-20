@@ -75,6 +75,14 @@ EOF
   chmod 0700 "${askpass_dir}/askpass.sh"
 }
 
+fail_remote_git_operation() {
+  local operation="$1"
+  if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+    fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. If the repository is private or requires authentication, set GITHUB_TOKEN with Contents read access"
+  fi
+  fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. Check that GITHUB_TOKEN can access the repository with Contents read permission"
+}
+
 export GIT_TERMINAL_PROMPT=0
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
   create_askpass
@@ -95,9 +103,7 @@ if [[ "${REPOSITORY_URL}" == /* && -z "${REPOSITORY_REVISION:-}" ]]; then
   log "Using local repository ${repo_dir}"
 else
   repository_is_local=0
-  if [[ "${REPOSITORY_URL}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
-    require_env GITHUB_TOKEN
-  elif [[ "${REPOSITORY_URL}" == /* ]]; then
+  if [[ "${REPOSITORY_URL}" == /* ]]; then
     repository_is_local=1
     [[ -d "${REPOSITORY_URL}" ]] \
       || fail 'a local REPOSITORY_URL must point to an existing directory'
@@ -107,7 +113,7 @@ else
       || fail 'a local REPOSITORY_URL must point to a Git repository accessible by the runner user'
     [[ "${repository_root}" == "${repository_source}" ]] \
       || fail 'a local REPOSITORY_URL must point to the Git repository root, not a subdirectory'
-  else
+  elif [[ ! "${REPOSITORY_URL}" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
     fail 'REPOSITORY_URL must be an https://github.com/<owner>/<repo>[.git] URL or an absolute container path'
   fi
 
@@ -122,9 +128,10 @@ else
       efficient_revision_kind='tag'
     fi
   else
-    remote_refs="$(git ls-remote --heads --tags "${REPOSITORY_URL}" \
-      "refs/heads/${REPOSITORY_REVISION}" "refs/tags/${REPOSITORY_REVISION}")" \
-      || fail 'failed to inspect remote refs for REPOSITORY_REVISION'
+    if ! remote_refs="$(git ls-remote --heads --tags "${REPOSITORY_URL}" \
+      "refs/heads/${REPOSITORY_REVISION}" "refs/tags/${REPOSITORY_REVISION}")"; then
+      fail_remote_git_operation 'inspect remote refs for'
+    fi
     remote_branch_ref=''
     remote_tag_ref=''
     while IFS=$'\t' read -r _ remote_ref_name; do
@@ -150,10 +157,12 @@ else
   repo_dir="${work_dir}/repo"
 
   log "Cloning ${REPOSITORY_URL}"
-  git "${clone_args[@]}" \
+  if ! git "${clone_args[@]}" \
     -- \
     "${REPOSITORY_URL}" \
-    "${repo_dir}"
+    "${repo_dir}"; then
+    fail_remote_git_operation 'clone'
+  fi
 
   if [[ -n "${REPOSITORY_REVISION:-}" && -z "${efficient_revision_kind}" ]]; then
     revision_kind='detached'

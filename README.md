@@ -8,7 +8,7 @@ GitHubリポジトリをコンテナ内へcloneするか、ホストのローカ
 
 1. 必須設定と認証情報を検証します。
 2. 次のどちらかの方法で対象リポジトリを用意します。
-   - リモートモード: `GITHUB_TOKEN` を使って一時ディレクトリへcloneし、同じ認証をClaude Codeから利用できるようにします。`REPOSITORY_REVISION` が指定されている場合はclone後にcheckoutします。
+   - リモートモード: 一時ディレクトリへcloneし、`GITHUB_TOKEN` が指定されていればcloneとClaude CodeからのGit操作に使用します。`REPOSITORY_REVISION` が指定されている場合はclone後にcheckoutします。
    - ローカルモード: `REPOSITORY_REVISION` が空ならbind mountされた既存の作業ツリーをそのまま使用し、指定されていれば一時ディレクトリへcloneしてcheckoutします。
 3. `{repo_root}/AGENTS.md` の存在、非空、UTF-8を確認します。
 4. repoルートで次の要領によりClaude Codeを起動します。
@@ -191,13 +191,13 @@ docker build \
 
 Claude認証は `CLAUDE_CODE_OAUTH_TOKEN` または `ANTHROPIC_API_KEY` のどちらか一方だけを指定します。
 
-リモートモードでは次の設定も必須です。
+GitHub認証が必要な場合は次の設定も使用します。
 
 | 変数 | 内容 |
 | --- | --- |
 | `GITHUB_TOKEN` | 対象repoとタスクに必要な最小権限を持つtoken |
 
-ローカル用Composeでは `GITHUB_TOKEN` は任意で、pushなどに必要な場合だけ使用します。
+`GITHUB_TOKEN` は任意です。public repositoryのcloneと認証を必要としないローカルGit操作だけなら省略できます。private repositoryのclone、push、その他の認証付きGit操作を行う場合は設定してください。remote refの確認またはcloneに失敗した場合、runnerはGitのエラーに加えて、tokenの有無に応じた確認事項を表示します。
 
 任意設定:
 
@@ -324,10 +324,13 @@ runnerはClaude Code終了後にGit操作を補完・検査しません。commit
 
 `GITHUB_TOKEN` はcredential URLへ保存しませんが、Claude Code自身がGit操作を行えるように、そのプロセスから利用可能です。次の条件を守ってください。
 
+- 認証付きGit操作が不要なら `GITHUB_TOKEN` をコンテナへ渡さない。
 - GitHub fine-grained tokenまたはGitHub Appの短寿命tokenを使う。
 - tokenの対象を実行対象repoだけに限定する。
 - cloneだけならContents read、pushさせる場合はContents writeとし、タスクに不要な権限を付与しない。
 - 第三者の未検証repoや未信頼のpull requestを実行しない。
 - runnerコンテナへSSH鍵、クラウド資格情報、ホストのDocker socketをmountしない。
+
+GitHub Actionsでcheckout済みrepositoryからcredentialも除外したい場合は、`actions/checkout` に `persist-credentials: false` を指定してください。既定ではcheckout用credentialがrepositoryのGit設定に保持されるため、`GITHUB_TOKEN` 環境変数をコンテナへ渡さないだけではGit認証を完全に除外できません。
 
 tokenをClaude Codeから分離する必要がある場合は、このrunnerではなくcheckout、Claude Code、pushを別コンテナまたはCI jobへ分離してください。
