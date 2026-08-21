@@ -7,7 +7,7 @@ readonly prompt="${PROMPT:-${DEFAULT_PROMPT}}"
 work_dir=''
 askpass_dir=''
 claude_pid=''
-repo_dir=''
+project_dir=''
 
 log() {
   printf '[claude-code-job-runner] %s\n' "$*" >&2
@@ -43,7 +43,7 @@ require_env() {
   [[ -n "${!name:-}" ]] || fail "${name} is required"
 }
 
-require_env REPOSITORY_URL
+require_env PROJECT_LOCATION
 require_env MAX_TURNS
 
 if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -n "${ANTHROPIC_API_KEY:-}" ]]; then
@@ -111,13 +111,39 @@ configure_github_askpass() {
 
 fail_git_operation() {
   local operation="$1"
-  if [[ "${REPOSITORY_URL}" == /* ]]; then
-    fail "failed to ${operation} local repository ${REPOSITORY_URL}; see the Git error above"
-  fi
   if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. Check the repository source, network, and protocol-specific authentication"
+    fail "failed to ${operation} ${PROJECT_LOCATION}; see the Git error above. Check the project location, network, and protocol-specific authentication"
   fi
-  fail "failed to ${operation} ${REPOSITORY_URL}; see the Git error above. GITHUB_TOKEN is only offered to the GITHUB_SERVER_URL host (github.com by default); check that host and the token's repository access"
+  fail "failed to ${operation} ${PROJECT_LOCATION}; see the Git error above. GITHUB_TOKEN is only offered to the GITHUB_SERVER_URL host (github.com by default); check that host and the token's repository access"
+}
+
+switch_git_revision() {
+  local git_root="$1"
+  local revision_kind='detached'
+  local revision_to_resolve="${GIT_REVISION}"
+  local resolved_revision=''
+
+  if git -C "${git_root}" show-ref --verify --quiet "refs/heads/${GIT_REVISION}"; then
+    revision_kind='local-branch'
+    revision_to_resolve="refs/heads/${GIT_REVISION}"
+  elif git -C "${git_root}" show-ref --verify --quiet "refs/remotes/origin/${GIT_REVISION}"; then
+    revision_kind='remote-branch'
+    revision_to_resolve="refs/remotes/origin/${GIT_REVISION}"
+  elif git -C "${git_root}" show-ref --verify --quiet "refs/tags/${GIT_REVISION}"; then
+    revision_to_resolve="refs/tags/${GIT_REVISION}"
+  fi
+
+  resolved_revision="$(git -C "${git_root}" rev-parse --verify --end-of-options "${revision_to_resolve}^{commit}" 2>/dev/null)" \
+    || fail 'GIT_REVISION must resolve to a commit available in the Git repository'
+
+  log "Switching to Git revision ${GIT_REVISION}"
+  if [[ "${revision_kind}" == 'local-branch' ]]; then
+    git -C "${git_root}" switch "${GIT_REVISION}"
+  elif [[ "${revision_kind}" == 'remote-branch' ]]; then
+    git -C "${git_root}" switch --track --create "${GIT_REVISION}" "refs/remotes/origin/${GIT_REVISION}"
+  else
+    git -C "${git_root}" switch --detach "${resolved_revision}"
+  fi
 }
 
 export GIT_TERMINAL_PROMPT=0
@@ -127,53 +153,61 @@ if [[ -n "${GITHUB_TOKEN:-}" ]]; then
 fi
 git config --global protocol.ext.allow always
 
-if [[ "${REPOSITORY_URL}" == /* && -z "${REPOSITORY_REVISION:-}" ]]; then
-  [[ -d "${REPOSITORY_URL}" ]] \
-    || fail 'a local REPOSITORY_URL must point to an existing directory'
+if [[ "${PROJECT_LOCATION}" == /* ]]; then
+  [[ -d "${PROJECT_LOCATION}" ]] \
+    || fail 'a local PROJECT_LOCATION must point to an existing directory'
 
-  repo_dir="$(cd -- "${REPOSITORY_URL}" && pwd -P)"
-  git config --global --add safe.directory "${repo_dir}"
-  repository_root="$(git -C "${repo_dir}" rev-parse --show-toplevel 2>/dev/null)" \
-    || fail 'a local REPOSITORY_URL must point to a Git repository root accessible by the runner user'
-  [[ "${repository_root}" == "${repo_dir}" ]] \
-    || fail 'a local REPOSITORY_URL must point to the Git repository root, not a subdirectory'
+  project_dir="$(cd -- "${PROJECT_LOCATION}" && pwd -P)"
+  git_root=''
+  project_relative_path=''
 
-  log "Using local repository ${repo_dir}"
-else
-  repository_is_local=0
-  if [[ "${REPOSITORY_URL}" == /* ]]; then
-    repository_is_local=1
-    [[ -d "${REPOSITORY_URL}" ]] \
-      || fail 'a local REPOSITORY_URL must point to an existing directory'
-    repository_source="$(cd -- "${REPOSITORY_URL}" && pwd -P)"
-    git config --global --add safe.directory "${repository_source}"
-    repository_root="$(git -C "${repository_source}" rev-parse --show-toplevel 2>/dev/null)" \
-      || fail 'a local REPOSITORY_URL must point to a Git repository accessible by the runner user'
-    [[ "${repository_root}" == "${repository_source}" ]] \
-      || fail 'a local REPOSITORY_URL must point to the Git repository root, not a subdirectory'
-  fi
+  if detected_git_root="$(git -c safe.directory='*' -C "${project_dir}" rev-parse --show-toplevel 2>/dev/null)"; then
+    git_root="$(cd -- "${detected_git_root}" && pwd -P)"
+    case "${project_dir}" in
+      "${git_root}") ;;
+      "${git_root}"/*) project_relative_path="${project_dir#"${git_root}"/}" ;;
+      *) fail 'Git reported a top-level directory that does not contain PROJECT_LOCATION' ;;
+    esac
 
-  clone_args=(clone)
-  efficient_revision_kind=''
-  if [[ -z "${REPOSITORY_REVISION:-}" ]]; then
-    clone_args+=(--single-branch)
-  elif (( repository_is_local )); then
-    if git -C "${repository_source}" show-ref --verify --quiet "refs/heads/${REPOSITORY_REVISION}"; then
-      efficient_revision_kind='branch'
-    elif git -C "${repository_source}" show-ref --verify --quiet "refs/tags/${REPOSITORY_REVISION}"; then
-      efficient_revision_kind='tag'
+    git config --global --add safe.directory "${git_root}"
+    log "Using local Git project ${project_dir} (Git root: ${git_root})"
+
+    if [[ -n "${GIT_REVISION:-}" ]]; then
+      switch_git_revision "${git_root}"
+
+      project_candidate="${git_root}"
+      if [[ -n "${project_relative_path}" ]]; then
+        project_candidate="${git_root}/${project_relative_path}"
+      fi
+      [[ -d "${project_candidate}" ]] \
+        || fail 'PROJECT_LOCATION does not exist at the selected GIT_REVISION'
+      project_dir="$(cd -- "${project_candidate}" && pwd -P)"
+      case "${project_dir}" in
+        "${git_root}"|"${git_root}"/*) ;;
+        *) fail 'PROJECT_LOCATION resolves outside the Git working tree at the selected GIT_REVISION' ;;
+      esac
     fi
   else
-    if ! remote_refs="$(git ls-remote --heads --tags -- "${REPOSITORY_URL}" \
-      "refs/heads/${REPOSITORY_REVISION}" "refs/tags/${REPOSITORY_REVISION}")"; then
+    [[ -z "${GIT_REVISION:-}" ]] \
+      || fail 'GIT_REVISION cannot be used when PROJECT_LOCATION is not inside a Git working tree'
+    log "Using local directory ${project_dir}"
+  fi
+else
+  clone_args=(clone)
+  efficient_revision_kind=''
+  if [[ -z "${GIT_REVISION:-}" ]]; then
+    clone_args+=(--single-branch)
+  else
+    if ! remote_refs="$(git ls-remote --heads --tags -- "${PROJECT_LOCATION}" \
+      "refs/heads/${GIT_REVISION}" "refs/tags/${GIT_REVISION}")"; then
       fail_git_operation 'inspect remote refs for'
     fi
     remote_branch_ref=''
     remote_tag_ref=''
     while IFS=$'\t' read -r _ remote_ref_name; do
-      if [[ "${remote_ref_name}" == "refs/heads/${REPOSITORY_REVISION}" ]]; then
+      if [[ "${remote_ref_name}" == "refs/heads/${GIT_REVISION}" ]]; then
         remote_branch_ref="${remote_ref_name}"
-      elif [[ "${remote_ref_name}" == "refs/tags/${REPOSITORY_REVISION}" ]]; then
+      elif [[ "${remote_ref_name}" == "refs/tags/${GIT_REVISION}" ]]; then
         remote_tag_ref="${remote_ref_name}"
       fi
     done <<<"${remote_refs}"
@@ -186,51 +220,29 @@ else
   fi
 
   if [[ -n "${efficient_revision_kind}" ]]; then
-    clone_args+=(--single-branch --branch "${REPOSITORY_REVISION}")
+    clone_args+=(--single-branch --branch "${GIT_REVISION}")
   fi
 
   work_dir="$(mktemp -d /workspace/claude-job.XXXXXX)"
-  repo_dir="${work_dir}/repo"
+  project_dir="${work_dir}/project"
 
-  log "Cloning ${REPOSITORY_URL}"
+  log "Cloning ${PROJECT_LOCATION}"
   if ! git "${clone_args[@]}" \
     -- \
-    "${REPOSITORY_URL}" \
-    "${repo_dir}"; then
+    "${PROJECT_LOCATION}" \
+    "${project_dir}"; then
     fail_git_operation 'clone'
   fi
 
-  if [[ -n "${REPOSITORY_REVISION:-}" && -z "${efficient_revision_kind}" ]]; then
-    revision_kind='detached'
-    revision_to_resolve="${REPOSITORY_REVISION}"
-    if git -C "${repo_dir}" show-ref --verify --quiet "refs/heads/${REPOSITORY_REVISION}"; then
-      revision_kind='local-branch'
-      revision_to_resolve="refs/heads/${REPOSITORY_REVISION}"
-    elif git -C "${repo_dir}" show-ref --verify --quiet "refs/remotes/origin/${REPOSITORY_REVISION}"; then
-      revision_kind='remote-branch'
-      revision_to_resolve="refs/remotes/origin/${REPOSITORY_REVISION}"
-    elif git -C "${repo_dir}" show-ref --verify --quiet "refs/tags/${REPOSITORY_REVISION}"; then
-      revision_to_resolve="refs/tags/${REPOSITORY_REVISION}"
-    fi
-
-    resolved_revision="$(git -C "${repo_dir}" rev-parse --verify --end-of-options "${revision_to_resolve}^{commit}" 2>/dev/null)" \
-      || fail 'REPOSITORY_REVISION must resolve to a commit available in the cloned repository'
-
-    log "Checking out revision ${REPOSITORY_REVISION}"
-    if [[ "${revision_kind}" == 'local-branch' ]]; then
-      git -C "${repo_dir}" switch "${REPOSITORY_REVISION}"
-    elif [[ "${revision_kind}" == 'remote-branch' ]]; then
-      git -C "${repo_dir}" switch --track --create "${REPOSITORY_REVISION}" "refs/remotes/origin/${REPOSITORY_REVISION}"
-    else
-      git -C "${repo_dir}" switch --detach "${resolved_revision}"
-    fi
+  if [[ -n "${GIT_REVISION:-}" && -z "${efficient_revision_kind}" ]]; then
+    switch_git_revision "${project_dir}"
   fi
 fi
 
-cd "${repo_dir}"
+cd "${project_dir}"
 
 [[ -f ./AGENTS.md && ! -L ./AGENTS.md ]] \
-  || fail 'the repository root must contain a regular, non-symlink AGENTS.md file'
+  || fail 'the project directory must contain a regular, non-symlink AGENTS.md file'
 [[ -s ./AGENTS.md ]] || fail 'AGENTS.md must not be empty'
 iconv -f UTF-8 -t UTF-8 ./AGENTS.md >/dev/null 2>&1 \
   || fail 'AGENTS.md must be valid UTF-8'
